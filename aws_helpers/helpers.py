@@ -8,9 +8,23 @@ from typing import (
 import logging
 import boto3
 import sys
+import json
 import traceback
+from functools import wraps
+import time
 from dotenv import load_dotenv
 load_dotenv(override=True)
+
+def measure_execution_time(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        execution_time = end_time - start_time
+        print(f"\nFunction '{func.__name__}' executed in {execution_time:.4f}s\n")
+        return result
+    return wrapper
 
 def _list_foundational_models(byOutputModality: Optional[str] = None,
                  byProvider: Optional[str] = None) -> None:
@@ -90,6 +104,76 @@ def _list_inference_profiles() -> None:
     for profile in response.get('inferenceProfileSummaries', []):
         print(f"Profile Name: {profile['inferenceProfileName']}\nProfile ID: {profile['inferenceProfileId']}")
         print("-" * 30)
+
+def _count_tokens(model_id: str, content: str, claude: bool = True) -> int:
+    """
+    Function to count the number of input tokens before you actually pass it to the model. Here is an example of the body
+    for anthropic model.
+
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 4096,
+        "messages": [
+            {
+                "role": "user",
+                "content": "Hello world"
+            }
+        ]
+    })
+
+    Parameters:
+        model_id (str): Model ID of foundation models ONLY
+        body (str): Content that will be passed to model. Refer to above example.
+
+    Returns:
+        response['InputTokens'] (int): Returns the number of input tokens.
+    """
+    AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY", None)
+    AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY", None)
+
+    if not AWS_ACCESS_KEY or not AWS_SECRET_KEY:
+        raise ValueError("AWS credentials not found")
+
+    session = boto3.Session(
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET_KEY,
+        region_name='us-east-1'
+    )
+
+    bedrock_runtime = session.client("bedrock-runtime", region_name="us-east-1")
+
+    # Your text/context that you want to count tokens for
+    if claude == False:
+        response = bedrock_runtime.count_tokens(
+            modelId=model_id,  # Claude 3.5 Sonnet v2
+            input={
+                "invokeModel": {
+                    "body": content
+                }
+            }
+        )
+    else:
+        body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 4096,
+        "messages": [
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
+        })
+
+        response = bedrock_runtime.count_tokens(
+            modelId=model_id,  # Claude 3.5 Sonnet v2
+            input={
+                "invokeModel": {
+                    "body": body
+                }
+            }
+        )
+
+    return response['inputTokens']
 
 def _parse_arn(arn: str) -> Dict:
     """

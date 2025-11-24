@@ -2,3 +2,7 @@ boto3
 python-dotenv
 ipykernel
 pandas
+datasets
+pillow
+requests
+pypandoc-binary

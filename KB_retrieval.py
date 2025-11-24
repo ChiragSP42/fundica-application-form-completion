@@ -24,14 +24,17 @@ load_dotenv(override=True)
 # Initialize client
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY", None)
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY", None)
+S3_BUCKET = os.getenv("S3_BUCKET", None)
+APPLICATION_FORM = os.getenv("APPLICATION_FORM", None)
 session = boto3.Session(aws_access_key_id=AWS_ACCESS_KEY,
                         aws_secret_access_key=AWS_SECRET_KEY,
                         region_name='us-east-1')
 bedrock_agent = session.client('bedrock-agent-runtime')
+s3_client = session.client("s3")
 
 # Configuration
 KB_ID = os.getenv('KNOWLEDGE_BASE_ID', None)
-NUM_RESULTS_PER_QUERY = 5
+NUM_RESULTS_PER_QUERY = 10
 MAX_WORKERS = 15  # Stay under 20 RPS limit
 
 # Thread-safe counter for progress tracking
@@ -51,7 +54,7 @@ class ProgressTracker:
         with self.lock:
             self.failed += 1
 
-def retrieve_with_retry(question_text: str, max_retries: int = 3) -> Dict:
+def retrieve_with_retry(question_text: str, user: str, max_retries: int = 3) -> Dict:
     """
     Retrieve from Knowledge Base with exponential backoff retry logic.
     
@@ -70,7 +73,12 @@ def retrieve_with_retry(question_text: str, max_retries: int = 3) -> Dict:
                 retrievalConfiguration={
                     'vectorSearchConfiguration': {
                         'numberOfResults': NUM_RESULTS_PER_QUERY,
-                        'overrideSearchType': 'HYBRID'  # HYBRID, SEMANTIC, or leave out for default
+                        'filter': {
+                            'equals': {
+                                'key': 'username',
+                                'value': user
+                            }
+                        }
                     }
                 }
             )
@@ -89,7 +97,7 @@ def retrieve_with_retry(question_text: str, max_retries: int = 3) -> Dict:
     
     raise Exception(f"Max retries ({max_retries}) exceeded for question: {question_text}")
 
-def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker) -> Dict:
+def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker, user: str) -> Dict:
     """
     Retrieve context for a single question with error handling.
     
@@ -105,7 +113,7 @@ def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker
     
     try:
         # Retrieve from Knowledge Base
-        response = retrieve_with_retry(question_text)
+        response = retrieve_with_retry(question_text, user)
         
         # Extract context chunks
         context_chunks = []
@@ -153,7 +161,7 @@ def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker
             'status': 'failed'
         }
 
-def retrieve_all_contexts_concurrent(questions: List[Dict], max_workers: int = 15) -> List[Dict]:
+def retrieve_all_contexts_concurrent(questions: List[Dict], user: str, max_workers: int = 15) -> List[Dict]:
     """
     Retrieve contexts for all questions using concurrent threads.
     
@@ -178,7 +186,7 @@ def retrieve_all_contexts_concurrent(questions: List[Dict], max_workers: int = 1
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks
         future_to_question = {
-            executor.submit(retrieve_context_for_question, q, progress): q 
+            executor.submit(retrieve_context_for_question, q, progress, user): q 
             for q in questions
         }
         
@@ -206,8 +214,9 @@ def retrieve_all_contexts_concurrent(questions: List[Dict], max_workers: int = 1
 
 # Example Usage
 if __name__ == "__main__":
+    user = 'Client_F'
     # Load your questions
-    with open("can_export_questions.json", 'r') as f:
+    with open("improved_questions.json", 'r') as f:
         can_export_questions = json.loads(f.read())
     # can_export_questions = [
     #     {"id": "Q1", "question": "What are the eligibility criteria for the grant?"},
@@ -220,15 +229,24 @@ if __name__ == "__main__":
     
     # Retrieve contexts concurrently
     enriched_questions = retrieve_all_contexts_concurrent(
-        can_export_questions, 
-        max_workers=15  # Adjust based on your needs
+        can_export_questions["questions"], 
+        max_workers=MAX_WORKERS,  # Adjust based on your needs,
+        user = user
     )
     
-    # Save results
+    # Save results locally
     with open('enriched_questions.json', 'w') as f:
         json.dump(enriched_questions, f, indent=2)
+    # Save results in S3
+    try:
+        s3_client.put_object(Bucket=S3_BUCKET,
+                             Key=f"batch-inference/{APPLICATION_FORM}/{user}/enriched_questions.json",
+                             ContentType='application/json',
+                             Body=json.dumps(enriched_questions, indent=2))
+    except Exception as e:
+        print(e)
     
-    print(f"Results saved to enriched_questions.json")
+    print(f"Results saved to enriched_questions.json locally and {S3_BUCKET}/batch-inference/{APPLICATION_FORM}/enriched_questions.json")
     
     # Print sample output
     if enriched_questions:

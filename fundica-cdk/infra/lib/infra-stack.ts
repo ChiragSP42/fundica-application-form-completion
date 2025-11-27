@@ -32,13 +32,13 @@ export class InfraStack extends cdk.Stack {
       destinationBucket: s3_docs
     })
 
-    const s3_filled = new aws_s3.Bucket(this, 'FilledApplicationBucket', {
+    const s3_filled_bucket = new aws_s3.Bucket(this, 'FilledApplicationBucket', {
       bucketName: `fundica-filled-${this.account}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true
     })
 
-    const s3_users = new aws_s3.Bucket(this, 'UserBucket', {
+    const s3_users_bucket = new aws_s3.Bucket(this, 'UserBucket', {
       bucketName: `fundica-users-${this.account}`,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       autoDeleteObjects: true
@@ -83,6 +83,7 @@ export class InfraStack extends cdk.Stack {
     // Attaching policy to role
     bedrock_policy.attachToRole(application_role)
 
+    // Basic Lambda role for logging
     const basic_lambda_role = new aws_iam.Role(this, 'BasicLambdaRole', {
       assumedBy: new aws_iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
@@ -106,12 +107,12 @@ export class InfraStack extends cdk.Stack {
       memorySize: 1024,
       ephemeralStorageSize: cdk.Size.mebibytes(1024),
       environment: {
-        S3_USERS: s3_users.bucketName 
+        S3_USERS: s3_users_bucket.bucketName 
       }
     })
 
     // Grant Metadata creation lambda with Read and Write permissions to S3
-    s3_users.grantReadWrite(metadata_creation_lambda);
+    s3_users_bucket.grantReadWrite(metadata_creation_lambda);
 
     // Knowledge base sync lambda
     const kb_sync_lambda = new aws_lambda.Function(this, 'KBSyncLambda', {
@@ -160,13 +161,13 @@ export class InfraStack extends cdk.Stack {
       role: application_role,
       environment: {
         S3_DOCS: s3_docs.bucketName,
-        S3_FILLED: s3_filled.bucketName,
+        S3_FILLED: s3_filled_bucket.bucketName,
         KB_ID: process.env.KB_ID || ''
       }
     })
 
     // Grant S3 access to application form completion lambda
-    s3_filled.grantReadWrite(application_form_lambda)
+    s3_filled_bucket.grantReadWrite(application_form_lambda)
     s3_docs.grantReadWrite(application_form_lambda)
 
     // MD to DOCX lambda
@@ -182,12 +183,11 @@ export class InfraStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
       environment: {
-        S3_FILLED: s3_filled.bucketName
+        S3_FILLED: s3_filled_bucket.bucketName
       }
     })
 
-    s3_filled.grantReadWrite(md_docx_lambda)
-
+    s3_filled_bucket.grantReadWrite(md_docx_lambda)
     //=======================================
     // STEPFUNCTIONS
     //=======================================

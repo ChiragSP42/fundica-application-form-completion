@@ -40,7 +40,7 @@ export class InfraStack extends cdk.Stack {
 
     const s3_users = new aws_s3.Bucket(this, 'UserBucket', {
       bucketName: `fundica-users-${this.account}`,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       autoDeleteObjects: true
     })
 
@@ -83,6 +83,13 @@ export class InfraStack extends cdk.Stack {
     // Attaching policy to role
     bedrock_policy.attachToRole(application_role)
 
+    const basic_lambda_role = new aws_iam.Role(this, 'BasicLambdaRole', {
+      assumedBy: new aws_iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        aws_iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    })
+
     //=======================================
     // LAMBDA FUNCTIONS
     //=======================================
@@ -94,6 +101,7 @@ export class InfraStack extends cdk.Stack {
       code: aws_lambda.Code.fromAsset(path.join(__dirname, "../../services/lambdas")),
       handler: 'metadata_creation_lambda.lambda_handler',
       runtime: aws_lambda.Runtime.PYTHON_3_13,
+      role: basic_lambda_role,
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
       ephemeralStorageSize: cdk.Size.mebibytes(1024),
@@ -170,6 +178,7 @@ export class InfraStack extends cdk.Stack {
           platform: aws_ecr_assets.Platform.LINUX_AMD64
         }
       ),
+      role: basic_lambda_role,
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
       environment: {

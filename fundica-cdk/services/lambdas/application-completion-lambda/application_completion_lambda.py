@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 from typing import List, Dict
 from datetime import date
 
-os.environ['PYPANDOC_PANDOC'] = '/opt/bin/pandoc'
+# os.environ['PYPANDOC_PANDOC'] = '/opt/bin/pandoc'
 
 # Get environment variables
 S3_DOCS = os.environ.get('S3_DOCS')
@@ -123,12 +123,13 @@ def lambda_handler(event, context):
 
         except Exception as s3_error:
             print(f"Warning: Could not save form to S3: {str(s3_error)}")
+            return error_response(400, f"Warning: Could not save form to S3: {str(s3_error)}")
         return success_response({
             'message': 'Application form completed',
             'username': username,
             'applicationForm': application_form,
             'generatedAt': f'{date.today()}',
-            'filename': f"{username}_{year}_{application_form}_completed.md"
+            'filename': f"{username}_{year}_{application_form}_completed.docx"
         })
     except Exception as e:
         print(f"Error in lambda_handler: {str(e)}")

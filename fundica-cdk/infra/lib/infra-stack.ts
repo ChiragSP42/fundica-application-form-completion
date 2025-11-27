@@ -40,8 +40,7 @@ export class InfraStack extends cdk.Stack {
 
     const s3_users_bucket = new aws_s3.Bucket(this, 'UserBucket', {
       bucketName: `fundica-users-${this.account}`,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      autoDeleteObjects: true
+      removalPolicy: cdk.RemovalPolicy.RETAIN
     })
 
     //=======================================
@@ -104,7 +103,7 @@ export class InfraStack extends cdk.Stack {
       runtime: aws_lambda.Runtime.PYTHON_3_13,
       role: basic_lambda_role,
       timeout: cdk.Duration.minutes(15),
-      memorySize: 1024,
+      memorySize: 512,
       ephemeralStorageSize: cdk.Size.mebibytes(1024),
       environment: {
         S3_USERS: s3_users_bucket.bucketName 
@@ -130,23 +129,6 @@ export class InfraStack extends cdk.Stack {
       }
     })
 
-    // Application form completion lambda
-    // const application_form_lambda = new aws_lambda.Function(this, 'ApplicationFormLambda', {
-    //   functionName: 'application-form-completion-lambda',
-    //   description: 'Lamda that will complete the appplication form',
-    //   code: aws_lambda.Code.fromAsset(path.join(__dirname, '../../services/lambdas/')),
-    //   handler: 'application_completion_lambda.lambda_handler',
-    //   runtime: aws_lambda.Runtime.PYTHON_3_13,
-    //   timeout: cdk.Duration.minutes(15),
-    //   memorySize: 2048,
-    //   role: application_role,
-    //   environment: {
-    //     S3_DOCS: s3_docs.bucketName,
-    //     KB_ID: process.env.KB_ID || '',
-    //     KB_DATASOURCE_ID: process.env.KB_DATASOURCE_ID || ''
-    //   }
-    // })
-
     const application_form_lambda = new aws_lambda.DockerImageFunction(this, 'ApplicationFormLambda', {
       functionName: 'application-form-completion-lambda',
       description: 'Lamda that will complete the appplication form',
@@ -157,7 +139,7 @@ export class InfraStack extends cdk.Stack {
         }
       ),
       timeout: cdk.Duration.minutes(15),
-      memorySize: 2048,
+      memorySize: 512,
       role: application_role,
       environment: {
         S3_DOCS: s3_docs.bucketName,
@@ -169,25 +151,6 @@ export class InfraStack extends cdk.Stack {
     // Grant S3 access to application form completion lambda
     s3_filled_bucket.grantReadWrite(application_form_lambda)
     s3_docs.grantReadWrite(application_form_lambda)
-
-    // MD to DOCX lambda
-    const md_docx_lambda = new aws_lambda.DockerImageFunction(this, 'PyPandocLambda', {
-      functionName: 'md-to-docx-lambda',
-      code: aws_lambda.DockerImageCode.fromImageAsset(
-        path.join(__dirname, '../../services/lambdas/pypandoc-lambda/'),
-        {
-          platform: aws_ecr_assets.Platform.LINUX_AMD64
-        }
-      ),
-      role: basic_lambda_role,
-      timeout: cdk.Duration.minutes(15),
-      memorySize: 1024,
-      environment: {
-        S3_FILLED: s3_filled_bucket.bucketName
-      }
-    })
-
-    s3_filled_bucket.grantReadWrite(md_docx_lambda)
     //=======================================
     // STEPFUNCTIONS
     //=======================================
@@ -207,15 +170,9 @@ export class InfraStack extends cdk.Stack {
       outputPath: '$.Payload'
     })
 
-    const fourth_task_md = new aws_sfn_tasks.LambdaInvoke(this, 'InvokeMdDocxLambda', {
-      lambdaFunction: md_docx_lambda,
-      outputPath: '$.Payload'
-    })
-
     const definition = first_task_metadata
     .next(second_task_kb)
     .next(third_task_application)
-    // .next(fourth_task_md)
 
     const stateMachine = new aws_sfn.StateMachine(this, 'StateMachine', {
       definitionBody: aws_sfn.DefinitionBody.fromChainable(definition),

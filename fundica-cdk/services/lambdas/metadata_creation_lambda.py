@@ -29,15 +29,11 @@ def lambda_handler(event, context):
         
         username = body.get('username')
         application_form = body.get('applicationForm') # Either CanExport Application form OR <TBD>
-        document_count = body.get('documentCount', 0)
         year = body.get('year', date.today().year)
         
         # Validate required fields
         if not username or not application_form or not year:
             return error_response(400, 'Missing required fields: username or applicationForm or year')
-        
-        if document_count == 0:
-            return error_response(400, 'No documents provided')
         
         listy = list_obj_s3(s3_client=s3_client,
                             bucket_name=S3_USERS,
@@ -59,7 +55,6 @@ def lambda_handler(event, context):
             'message': f' {successful} Metadata created successfully and {failed} failed',
             'username': username,
             'applicationForm': application_form,
-            'documentCount': document_count,
             'year': year,
             'nextStep': 'Knowledge base sync will be triggered'
         })

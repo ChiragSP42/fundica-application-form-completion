@@ -1,4 +1,4 @@
-# Docker stuff to create lambda function
+# Docker stuff to manually create lambda function
 
 ## Step 1
 

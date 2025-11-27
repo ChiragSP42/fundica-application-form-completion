@@ -3,24 +3,27 @@ import boto3
 import os
 import time
 import pypandoc
-from io import BytesIO
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from datetime import date
 
+print(boto3.__version__)
 # os.environ['PYPANDOC_PANDOC'] = '/opt/bin/pandoc'
 
 # Get environment variables
 S3_DOCS = os.environ.get('S3_DOCS')
 S3_FILLED = os.getenv("S3_FILLED")
 KB_ID = os.getenv("KB_ID", '')
-NUM_RESULTS_PER_QUERY = 5
+NUM_RESULTS_PER_QUERY = 20
 MAX_WORKERS = 15
 # MODEL_ID = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
 # MODEL_ID = 'us.anthropic.claude-3-7-sonnet-20250219-v1:0'
 MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+# COUNTING_MODEL_ID = 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0'
+# COUNTING_MODEL_ID = 'anthropic.claude-sonnet-4-20250514-v1:0'
+COUNTING_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
 
 # Initialize clients
 bedrock_runtime_client = boto3.client("bedrock-runtime")
@@ -46,11 +49,11 @@ def lambda_handler(event, context):
         
         # Validate required fields
         if not username or not application_form:
-            return error_response(400, 'Missing required fields: username and applicationForm')
+            return return_response(400, {"error": 'Missing required fields: username and applicationForm'})
     
     except Exception as e:
         print(f"Error in lambda_handler: {str(e)}")
-        return error_response(500, f'Internal server error: {str(e)}')
+        return return_response(500, {"error": f'Internal server error: {str(e)}'})
 
     # Read the CanExport Application form in the form of bytes
     print('Read the CanExport Application form template in the form of bytes')
@@ -59,7 +62,7 @@ def lambda_handler(event, context):
         document_bytes = response['Body'].read()
     except Exception as e:
         print(f"{application_form} not found. Upload applicaiton form first")
-        return error_response(400, f'Application form template not found: {str(e)}')
+        return return_response(400, {"error": f'Application form template not found: {str(e)}'})
 
 
     # Load questions
@@ -69,7 +72,7 @@ def lambda_handler(event, context):
         questions = json.loads(response['Body'].read())
     except Exception as e:
         print(f"{application_form}_questions.json not found. Check generation of questions.")
-        return error_response(400, f'Questions not found: {str(e)}')
+        return return_response(400, {"error": f'Questions not found: {str(e)}'})
 
     # Create enriched questions concurrently
     print("Create enriched questions")
@@ -87,28 +90,12 @@ def lambda_handler(event, context):
         application_writing_prompt = response['Body'].read().decode('utf-8')
     except Exception as e:
         print(f"{application_form}_application_writing_prompt.txt not found. Check existence of prompt.")
-        return error_response(400, f'Application prompt not found: {str(e)}')
-
-    # Stitch retrieved contents, the questions and the section
-    print("Stitch retrieved contents, the questions and the section")
-    enriched_data = []
-    for enrich in enriched_questions:
-        try:
-            section = enrich['section']
-            question = enrich['question']
-            context = enrich['context']
-        except:
-            return error_response(400, f'{json.dumps(enrich, indent=2)}')
-
-        format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
-        enriched_data.append(format)
-
-    enriched_text = "\n\n".join(enriched_data)
+        return return_response(400, {"error": f'Application prompt not found: {str(e)}'})
 
     # Generate final completed application form
     print("Generate final completed application form")
     try:
-        completed_application_form = generate_application_form(document_bytes, enriched_text, application_writing_prompt)
+        completed_application_form = generate_application_form(document_bytes, enriched_questions, application_writing_prompt)
 
         try:
             # Convert markdown to docx using pypandoc
@@ -123,8 +110,8 @@ def lambda_handler(event, context):
 
         except Exception as s3_error:
             print(f"Warning: Could not save form to S3: {str(s3_error)}")
-            return error_response(400, f"Warning: Could not save form to S3: {str(s3_error)}")
-        return success_response({
+            return return_response(400, {"error": f"Warning: Could not save form to S3: {str(s3_error)}"})
+        return return_response(200, {
             'message': 'Application form completed',
             'username': username,
             'applicationForm': application_form,
@@ -133,17 +120,30 @@ def lambda_handler(event, context):
         })
     except Exception as e:
         print(f"Error in lambda_handler: {str(e)}")
-        return error_response(500, f'Internal server error: {str(e)}')
+        return return_response(500, {"error": f'Internal server error: {str(e)}'})
 
-def generate_application_form(document_bytes, enriched_text, application_writing_prompt):
+def generate_application_form(document_bytes, enriched_questions, application_writing_prompt)-> str:
     """
     Generate the application form based on the form type.
     This function contains templates for different application types.
     
     Replace the placeholder content with actual data extracted from your knowledge base.
     """
+    # Stitch retrieved contents, the questions and the section
+    print("Stitch retrieved contents, the questions and the section")
+    enriched_data = []
+    for enrich in enriched_questions:
+        section = enrich['section']
+        question = enrich['question']
+        context = enrich['context']
 
-    completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
+        format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
+        enriched_data.append(format)
+    enriched_text = "\n\n".join(enriched_data)
+    # First check if input tokens will fit in one LLM call
+    print("First check if input tokens will fit in one LLM call")
+    try:
+        completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
                                                 messages=[
                                                     {
                                                         'role': 'user',
@@ -171,39 +171,192 @@ def generate_application_form(document_bytes, enriched_text, application_writing
                                                 inferenceConfig={
                                                     'maxTokens': 63000
                                                 })
-    return completed_application_form['output']['message']['content'][0]['text']
+        return completed_application_form['output']['message']['content'][0]['text']
+    except bedrock_runtime_client.exceptions.ValidationException as e:
+        print(f"Input tokens are too big, implementing (N+1) approach: {e}")
+        # Figure out how many concurrent LLM calls are needed
+        print("Figure out how many concurrent LLM calls are needed")
+        splits, remainder = split_counter(enriched_questions=enriched_questions,
+                      document_bytes=document_bytes,
+                      application_writing_prompt=application_writing_prompt)
+        # Now N number of concurrent LLM calls
+        print(f"Starting {splits} number of concurrent calls...")
+        start_time = time.time()
+        progress = ProgressTracker(splits)
+        filled_parts = []
+        max_workers = splits if splits <= 3 else 3
+        start_index = 0
+        counter = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            end_index = start_index + splits + (1 if counter < remainder else 0)
+            enriched_quesitions_subset = enriched_questions[start_index: end_index]
+            enriched_data = []
+            for enrich in enriched_quesitions_subset:
+                section = enrich['section']
+                question = enrich['question']
+                context = enrich['context']
 
+                format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
+                enriched_data.append(format)
+            enriched_text = "\n\n".join(enriched_data)
+            start_index = end_index
+            future_completed = [executor.submit(generate_answers, 
+                                                progress, 
+                                                document_bytes, 
+                                                enriched_text, 
+                                                application_writing_prompt)]
 
-def success_response(data):
-    """
-    Return a successful response with proper CORS headers.
-    """
-    return {
-        'statusCode': 200,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        },
-        'body': json.dumps(data)
-    }
+            for future in as_completed(future_completed):
+                result = future.result()
+                filled_parts.append(result)
 
+        # Stitch the part answers and pass it through one final LLM to polish everything out
+        stitched = "\n".join(filled_parts)
+        elapsed_time = time.time() - start_time
+        print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
+        print(f"Average time per split: {(elapsed_time/splits):.2f} seconds/split")
+        print("Final LLM call to polish it out")
+        completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
+                                                                    messages=[
+                                                                        {
+                                                                            'role': 'user',
+                                                                            'content': [
+                                                                                {
+                                                                                    'document':{
+                                                                                        'format': 'docx',
+                                                                                        'name': 'CanExport Application Form',
+                                                                                        'source': {
+                                                                                            'bytes': document_bytes
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                {
+                                                                                    'text': stitched
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    ],
+                                                                    system=[
+                                                                        {
+                                                                            'text': "I have attached the application form template. Refer to it and fill out the application form from the context provided"
+                                                                        }
+                                                                    ],
+                                                                    inferenceConfig={
+                                                                        'maxTokens': 63000
+                                                                    })
 
-def error_response(status_code, message):
+        return completed_application_form
+    
+def generate_answers(progress,
+                     document_bytes,
+                     enriched_text,
+                     application_writing_prompt):
+    try:
+        completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
+                                                                    messages=[
+                                                                        {
+                                                                            'role': 'user',
+                                                                            'content': [
+                                                                                {
+                                                                                    'document':{
+                                                                                        'format': 'docx',
+                                                                                        'name': 'CanExport Application Form',
+                                                                                        'source': {
+                                                                                            'bytes': document_bytes
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                {
+                                                                                    'text': enriched_text
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    ],
+                                                                    system=[
+                                                                        {
+                                                                            'text': application_writing_prompt
+                                                                        }
+                                                                    ],
+                                                                    inferenceConfig={
+                                                                        'maxTokens': 63000
+                                                                    })
+        
+        progress.increment_completed()
+        return completed_application_form['output']['message']['content'][0]['text']
+    except Exception as e:
+        print(f"N + 1 approach failed when generating part answers: {e}")
+        progress.increment_failed()
+        return ""
+
+def split_counter(enriched_questions: List, 
+                  document_bytes, 
+                  application_writing_prompt: str) -> Tuple[int, int]:
     """
-    Return an error response with proper CORS headers.
+    This function determines how many concurrent LLM calls are needed 
+    by counting how many splits it takes to pass through the model.
+
+    Args:
+        enriched_questions (List): List of dict containing section, question and context
+        document_bytes (_type_): The application form template
+        application_writing_prompt (str): The system prompt
+
+    Returns:
+        int: Number of split
     """
-    return {
-        'statusCode': status_code,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        },
-        'body': json.dumps({'error': message})
-    }
+    # Start off with two
+    split = 2
+    # Flag to detemine when all splits have passed
+    split_failed_flag = True
+    remainder = 1
+    while split_failed_flag:
+        if split >= 10:
+            break
+        print(f"Split: {split}")
+        parts, remainder = divmod(len(enriched_questions), split)
+        print(f"Parts: {parts}, Remainder: {remainder}")
+        start_index = 0
+        # Flag to determine if all splits passed or not
+        counting_failed_flag = False
+        for i in range(split):
+            end_index = start_index + parts + (1 if i<remainder else 0)
+            enriched_quesitions_subset = enriched_questions[start_index: end_index]
+            enriched_data = []
+            for enrich in enriched_quesitions_subset:
+                section = enrich['section']
+                question = enrich['question']
+                context = enrich['context']
+
+                format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
+                enriched_data.append(format)
+            enriched_text = "\n\n".join(enriched_data)
+            try:
+                converse = {
+                    "messages": [
+                        {
+                            'role': 'user',
+                            'content': [
+                                {
+                                    'text': enriched_text
+                                },
+                                {
+                                    'text': application_writing_prompt
+                                }
+                            ]
+                        }
+                    ]
+                }
+                tokens = bedrock_runtime_client.count_tokens(modelId=COUNTING_MODEL_ID, input={'converse': converse})
+                print(f"Number of input tokens for {i}th part: {tokens}")
+            except Exception as e:
+                print(f"Split counter failed, incrementing counter: {e}")
+                counting_failed_flag = True
+                break
+            
+        if counting_failed_flag == True:
+            split += 1
+        else:
+            split_failed_flag = False
+    return split, remainder
 
 class ProgressTracker:
     def __init__(self, total):
@@ -389,3 +542,18 @@ def retrieve_all_contexts_concurrent(questions: List[Dict], user: str, year: int
     print(f"{'='*60}\n")
     
     return enriched_questions
+
+def return_response(status_code: int, message: dict):
+    """
+    Return an error response with proper CORS headers.
+    """
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        },
+        'body': json.dumps(message)
+    }

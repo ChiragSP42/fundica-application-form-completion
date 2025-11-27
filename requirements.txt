@@ -6,3 +6,4 @@ datasets
 pillow
 requests
 pypandoc-binary
+tiktoken>=0.12.0

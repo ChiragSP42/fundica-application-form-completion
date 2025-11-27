@@ -6,12 +6,12 @@ import pypandoc
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
-from typing import List, Dict, Tuple
+from typing import List, Dict
 from botocore.config import Config
 from datetime import date
-
-print(boto3.__version__)
-# os.environ['PYPANDOC_PANDOC'] = '/opt/bin/pandoc'
+import tiktoken
+from io import BytesIO
+import tempfile
 
 # Get environment variables
 S3_DOCS = os.environ.get('S3_DOCS')
@@ -159,6 +159,16 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
     enriched_text = "\n\n".join(enriched_data)
     # First check if input tokens will fit in one LLM call
     print("First check if input tokens will fit in one LLM call")
+    print("Converting to docx")
+    with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
+        temp_docx_file.write(document_bytes)
+        temp_docx_file.flush()
+        # Use convert_file to convert the temp DOCX file to plain text
+        document = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
+    
+    encoding = tiktoken.get_encoding('cl100k_base')
+    tokens = len(encoding.encode(document+enriched_text+application_writing_prompt))
+    print(f"Total input tokens: {tokens}")
     try:
         completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
                                                 messages=[
@@ -201,6 +211,9 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
             # Stitch the part answers and pass it through one final LLM to polish everything out
             stitched = "\n".join(filled_parts)
             print("Final LLM call to polish it out")
+            encoding = tiktoken.get_encoding('cl100k_base')
+            tokens = len(encoding.encode(document+stitched+"I have attached the application form template. Refer to it and fill out the application form from the context provided"))
+            print(f"Total input tokens after everything: {tokens}")
             start_time = time.time()
             completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
                                                                         messages=[
@@ -323,7 +336,15 @@ def split_counter(enriched_questions: List,
             enriched_text = "\n\n".join(enriched_data)
             start_index = end_index
             try:
-                print("Trying first LLM call of split")
+                print("Trying first of many LLM call of split")
+                with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
+                    temp_docx_file.write(document_bytes)
+                    temp_docx_file.flush()
+                    # Use convert_file to convert the temp DOCX file to plain text
+                    document = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
+                encoding = tiktoken.get_encoding('cl100k_base')
+                tokens = len(encoding.encode(document+enriched_text+application_writing_prompt))
+                print(f"Total input tokens for first of many LLM: {tokens}")
                 start_time = time.time()
                 completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
                                                                     messages=[
@@ -374,6 +395,14 @@ def split_counter(enriched_questions: List,
                         format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
                         enriched_data.append(format)
                     enriched_text = "\n\n".join(enriched_data)
+                    with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
+                        temp_docx_file.write(document_bytes)
+                        temp_docx_file.flush()
+                        # Use convert_file to convert the temp DOCX file to plain text
+                        document = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
+                    encoding = tiktoken.get_encoding('cl100k_base')
+                    tokens = len(encoding.encode(document+enriched_text+application_writing_prompt))
+                    print(f"Total input tokens for concurrent LLM: {tokens}")
                     start_index = end_index
                     counter += 1
                     future_completed = [executor.submit(generate_answers, 

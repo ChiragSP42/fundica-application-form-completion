@@ -13,4 +13,5 @@ dependencies = [
     "pypandoc-binary>=1.16",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
+    "tiktoken>=0.12.0",
 ]

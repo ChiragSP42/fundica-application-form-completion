@@ -7,6 +7,7 @@ from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
 from typing import List, Dict, Tuple
+from botocore.config import Config
 from datetime import date
 
 print(boto3.__version__)
@@ -26,7 +27,15 @@ MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
 COUNTING_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
 
 # Initialize clients
-bedrock_runtime_client = boto3.client("bedrock-runtime")
+config = Config(
+    read_timeout=300,
+    connect_timeout=60,
+    retries={
+        'total_max_attempts': 5,
+        'mode': 'adaptive'
+    }
+)
+bedrock_runtime_client = boto3.client("bedrock-runtime", config=config)
 bedrock_agent = boto3.client('bedrock-agent-runtime')
 s3_client = boto3.client('s3')
 
@@ -95,29 +104,37 @@ def lambda_handler(event, context):
     # Generate final completed application form
     print("Generate final completed application form")
     try:
+        start_time = time.time()
         completed_application_form = generate_application_form(document_bytes, enriched_questions, application_writing_prompt)
+        elapsed_time = time.time() - start_time
+        print("FORM FILLED!")
+        print(f"Total time elapsed: {elapsed_time:.2f} seconds")
+        if completed_application_form:
+            try:
+                # Convert markdown to docx using pypandoc
+                print("Converting to docx")
+                temp_docx = '/tmp/output.docx'
+                pypandoc.convert_text(
+                        source=completed_application_form,
+                        to='docx',
+                        format='md',
+                        outputfile=temp_docx
+                    )
+                print("Uploading to S3")
+                s3_client.upload_file(temp_docx, S3_FILLED, f'{username}/{year}/{username}_{year}_{application_form}_completed.docx')
 
-        try:
-            # Convert markdown to docx using pypandoc
-            temp_docx = '/tmp/output.docx'
-            pypandoc.convert_text(
-                    source=completed_application_form,
-                    to='docx',
-                    format='md',
-                    outputfile=temp_docx
-                )
-            s3_client.upload_file(temp_docx, S3_FILLED, f'{username}/{year}/{username}_{year}_{application_form}_completed.docx')
-
-        except Exception as s3_error:
-            print(f"Warning: Could not save form to S3: {str(s3_error)}")
-            return return_response(400, {"error": f"Warning: Could not save form to S3: {str(s3_error)}"})
-        return return_response(200, {
-            'message': 'Application form completed',
-            'username': username,
-            'applicationForm': application_form,
-            'generatedAt': f'{date.today()}',
-            'filename': f"{username}_{year}_{application_form}_completed.docx"
-        })
+            except Exception as s3_error:
+                print(f"Warning: Could not save form to S3: {str(s3_error)}")
+                return return_response(400, {"error": f"Warning: Could not save form to S3: {str(s3_error)}"})
+            return return_response(200, {
+                'message': 'Application form completed',
+                'username': username,
+                'applicationForm': application_form,
+                'generatedAt': f'{date.today()}',
+                'filename': f"{username}_{year}_{application_form}_completed.docx"
+            })
+        else:
+            return return_response(400, {"error": f'N+1 approach failed'})
     except Exception as e:
         print(f"Error in lambda_handler: {str(e)}")
         return return_response(500, {"error": f'Internal server error: {str(e)}'})
@@ -171,81 +188,53 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
                                                 inferenceConfig={
                                                     'maxTokens': 63000
                                                 })
+        print("Went through in a single call!")
         return completed_application_form['output']['message']['content'][0]['text']
     except bedrock_runtime_client.exceptions.ValidationException as e:
         print(f"Input tokens are too big, implementing (N+1) approach: {e}")
         # Figure out how many concurrent LLM calls are needed
-        print("Figure out how many concurrent LLM calls are needed")
-        splits, remainder = split_counter(enriched_questions=enriched_questions,
+        start_time = time.time()
+        filled_parts = split_counter(enriched_questions=enriched_questions,
                       document_bytes=document_bytes,
                       application_writing_prompt=application_writing_prompt)
-        # Now N number of concurrent LLM calls
-        print(f"Starting {splits} number of concurrent calls...")
-        start_time = time.time()
-        progress = ProgressTracker(splits)
-        filled_parts = []
-        max_workers = splits if splits <= 3 else 3
-        start_index = 0
-        counter = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            end_index = start_index + splits + (1 if counter < remainder else 0)
-            enriched_quesitions_subset = enriched_questions[start_index: end_index]
-            enriched_data = []
-            for enrich in enriched_quesitions_subset:
-                section = enrich['section']
-                question = enrich['question']
-                context = enrich['context']
-
-                format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
-                enriched_data.append(format)
-            enriched_text = "\n\n".join(enriched_data)
-            start_index = end_index
-            future_completed = [executor.submit(generate_answers, 
-                                                progress, 
-                                                document_bytes, 
-                                                enriched_text, 
-                                                application_writing_prompt)]
-
-            for future in as_completed(future_completed):
-                result = future.result()
-                filled_parts.append(result)
-
-        # Stitch the part answers and pass it through one final LLM to polish everything out
-        stitched = "\n".join(filled_parts)
-        elapsed_time = time.time() - start_time
-        print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
-        print(f"Average time per split: {(elapsed_time/splits):.2f} seconds/split")
-        print("Final LLM call to polish it out")
-        completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
-                                                                    messages=[
-                                                                        {
-                                                                            'role': 'user',
-                                                                            'content': [
-                                                                                {
-                                                                                    'document':{
-                                                                                        'format': 'docx',
-                                                                                        'name': 'CanExport Application Form',
-                                                                                        'source': {
-                                                                                            'bytes': document_bytes
+        if filled_parts:
+            # Stitch the part answers and pass it through one final LLM to polish everything out
+            stitched = "\n".join(filled_parts)
+            print("Final LLM call to polish it out")
+            start_time = time.time()
+            completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
+                                                                        messages=[
+                                                                            {
+                                                                                'role': 'user',
+                                                                                'content': [
+                                                                                    {
+                                                                                        'document':{
+                                                                                            'format': 'docx',
+                                                                                            'name': 'CanExport Application Form',
+                                                                                            'source': {
+                                                                                                'bytes': document_bytes
+                                                                                            }
                                                                                         }
+                                                                                    },
+                                                                                    {
+                                                                                        'text': stitched
                                                                                     }
-                                                                                },
-                                                                                {
-                                                                                    'text': stitched
-                                                                                }
-                                                                            ]
-                                                                        }
-                                                                    ],
-                                                                    system=[
-                                                                        {
-                                                                            'text': "I have attached the application form template. Refer to it and fill out the application form from the context provided"
-                                                                        }
-                                                                    ],
-                                                                    inferenceConfig={
-                                                                        'maxTokens': 63000
-                                                                    })
-
-        return completed_application_form
+                                                                                ]
+                                                                            }
+                                                                        ],
+                                                                        system=[
+                                                                            {
+                                                                                'text': "I have attached the application form template. Refer to it and fill out the application form from the context provided"
+                                                                            }
+                                                                        ],
+                                                                        inferenceConfig={
+                                                                            'maxTokens': 63000
+                                                                        })
+            elapsed_time = time.time() - start_time
+            print(f"Time elapsed for polishing LLM: {elapsed_time:.2f} seconds")
+            return completed_application_form['output']['message']['content'][0]['text']
+        else:
+            return ""
     
 def generate_answers(progress,
                      document_bytes,
@@ -290,7 +279,7 @@ def generate_answers(progress,
 
 def split_counter(enriched_questions: List, 
                   document_bytes, 
-                  application_writing_prompt: str) -> Tuple[int, int]:
+                  application_writing_prompt: str) -> List[str]:
     """
     This function determines how many concurrent LLM calls are needed 
     by counting how many splits it takes to pass through the model.
@@ -308,8 +297,10 @@ def split_counter(enriched_questions: List,
     # Flag to detemine when all splits have passed
     split_failed_flag = True
     remainder = 1
+    filled_parts = []
+    print(f"Total length of enriched questions: {len(enriched_questions)}")
     while split_failed_flag:
-        if split >= 10:
+        if split >= 3:
             break
         print(f"Split: {split}")
         parts, remainder = divmod(len(enriched_questions), split)
@@ -319,6 +310,7 @@ def split_counter(enriched_questions: List,
         counting_failed_flag = False
         for i in range(split):
             end_index = start_index + parts + (1 if i<remainder else 0)
+            print(f"Start index: {start_index}, End index: {end_index}")
             enriched_quesitions_subset = enriched_questions[start_index: end_index]
             enriched_data = []
             for enrich in enriched_quesitions_subset:
@@ -329,24 +321,76 @@ def split_counter(enriched_questions: List,
                 format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
                 enriched_data.append(format)
             enriched_text = "\n\n".join(enriched_data)
+            start_index = end_index
             try:
-                converse = {
-                    "messages": [
-                        {
-                            'role': 'user',
-                            'content': [
-                                {
-                                    'text': enriched_text
-                                },
-                                {
-                                    'text': application_writing_prompt
-                                }
-                            ]
-                        }
-                    ]
-                }
-                tokens = bedrock_runtime_client.count_tokens(modelId=COUNTING_MODEL_ID, input={'converse': converse})
-                print(f"Number of input tokens for {i}th part: {tokens}")
+                print("Trying first LLM call of split")
+                start_time = time.time()
+                completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
+                                                                    messages=[
+                                                                        {
+                                                                            'role': 'user',
+                                                                            'content': [
+                                                                                {
+                                                                                    'document':{
+                                                                                        'format': 'docx',
+                                                                                        'name': 'CanExport Application Form',
+                                                                                        'source': {
+                                                                                            'bytes': document_bytes
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                {
+                                                                                    'text': enriched_text
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    ],
+                                                                    system=[
+                                                                        {
+                                                                            'text': application_writing_prompt
+                                                                        }
+                                                                    ],
+                                                                    inferenceConfig={
+                                                                        'maxTokens': 20000
+                                                                    })
+                elapsed_time = time.time() - start_time
+                print(f"Time elapsed for first LLM call: {elapsed_time:.2f} seconds")
+                print(f"{split} works, proceeding with concurrent LLM calls for rest of it")
+                filled_parts.append(completed_application_form['output']['message']['content'][0]['text'])
+                max_workers = split if split <= 3 else 3
+                counter = i
+                progress = ProgressTracker(len(enriched_questions))
+                start_time = time.time()
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    end_index = start_index + parts + (1 if counter < remainder else 0)
+                    print(f"Start index: {start_index}, End index: {end_index}")
+                    enriched_quesitions_subset = enriched_questions[start_index: end_index]
+                    enriched_data = []
+                    for enrich in enriched_quesitions_subset:
+                        section = enrich['section']
+                        question = enrich['question']
+                        context = enrich['context']
+
+                        format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
+                        enriched_data.append(format)
+                    enriched_text = "\n\n".join(enriched_data)
+                    start_index = end_index
+                    counter += 1
+                    future_completed = [executor.submit(generate_answers, 
+                                                        progress, 
+                                                        document_bytes, 
+                                                        enriched_text, 
+                                                        application_writing_prompt)]
+
+                    for future in as_completed(future_completed):
+                        result = future.result()
+                        filled_parts.append(result)
+
+                elapsed_time = time.time() - start_time
+                print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
+                print(f"Average time per split: {(elapsed_time/split):.2f} seconds/split")
+                counting_failed_flag = False
+                break
             except Exception as e:
                 print(f"Split counter failed, incrementing counter: {e}")
                 counting_failed_flag = True
@@ -356,7 +400,7 @@ def split_counter(enriched_questions: List,
             split += 1
         else:
             split_failed_flag = False
-    return split, remainder
+    return filled_parts
 
 class ProgressTracker:
     def __init__(self, total):

@@ -111,12 +111,16 @@ def lambda_handler(event, context):
         completed_application_form = generate_application_form(document_bytes, enriched_text, application_writing_prompt)
 
         try:
-            s3_client.put_object(
-                Bucket=S3_FILLED,
-                Key=f"{username}/{year}/{username}_{year}_{application_form}_completed.md",
-                Body=completed_application_form,
-                ContentType='text/markdown'
-            )
+            # Convert markdown to docx using pypandoc
+            temp_docx = '/tmp/output.docx'
+            pypandoc.convert_text(
+                    source=completed_application_form,
+                    to='docx',
+                    format='md',
+                    outputfile=temp_docx
+                )
+            s3_client.upload_file(temp_docx, S3_FILLED, f'{username}/{year}/{username}_{year}_{application_form}_completed.docx')
+
         except Exception as s3_error:
             print(f"Warning: Could not save form to S3: {str(s3_error)}")
         return success_response({

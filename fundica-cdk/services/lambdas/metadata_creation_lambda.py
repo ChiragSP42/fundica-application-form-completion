@@ -60,6 +60,7 @@ def lambda_handler(event, context):
             'username': username,
             'applicationForm': application_form,
             'documentCount': document_count,
+            'year': year,
             'nextStep': 'Knowledge base sync will be triggered'
         })
     

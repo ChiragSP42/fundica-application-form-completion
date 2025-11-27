@@ -7,6 +7,7 @@ import * as aws_s3_deployment from 'aws-cdk-lib/aws-s3-deployment';
 import * as aws_lambda from 'aws-cdk-lib/aws-lambda';
 import * as aws_iam from 'aws-cdk-lib/aws-iam';
 import * as aws_sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as aws_ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as aws_sfn_tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 dotenv.config();
 
@@ -97,12 +98,12 @@ export class InfraStack extends cdk.Stack {
       memorySize: 1024,
       ephemeralStorageSize: cdk.Size.mebibytes(1024),
       environment: {
-        S3_DOCS: s3_docs.bucketName 
+        S3_USERS: s3_users.bucketName 
       }
     })
 
     // Grant Metadata creation lambda with Read and Write permissions to S3
-    s3_docs.grantReadWrite(metadata_creation_lambda);
+    s3_users.grantReadWrite(metadata_creation_lambda);
 
     // Knowledge base sync lambda
     const kb_sync_lambda = new aws_lambda.Function(this, 'KBSyncLambda', {
@@ -121,32 +122,58 @@ export class InfraStack extends cdk.Stack {
     })
 
     // Application form completion lambda
-    const application_form_lambda = new aws_lambda.Function(this, 'ApplicationFormLambda', {
+    // const application_form_lambda = new aws_lambda.Function(this, 'ApplicationFormLambda', {
+    //   functionName: 'application-form-completion-lambda',
+    //   description: 'Lamda that will complete the appplication form',
+    //   code: aws_lambda.Code.fromAsset(path.join(__dirname, '../../services/lambdas/')),
+    //   handler: 'application_completion_lambda.lambda_handler',
+    //   runtime: aws_lambda.Runtime.PYTHON_3_13,
+    //   timeout: cdk.Duration.minutes(15),
+    //   memorySize: 2048,
+    //   role: application_role,
+    //   environment: {
+    //     S3_DOCS: s3_docs.bucketName,
+    //     KB_ID: process.env.KB_ID || '',
+    //     KB_DATASOURCE_ID: process.env.KB_DATASOURCE_ID || ''
+    //   }
+    // })
+
+    const application_form_lambda = new aws_lambda.DockerImageFunction(this, 'ApplicationFormLambda', {
       functionName: 'application-form-completion-lambda',
       description: 'Lamda that will complete the appplication form',
-      code: aws_lambda.Code.fromAsset(path.join(__dirname, '../../services/lambdas/')),
-      handler: 'application_completion_lambda.lambda_handler',
-      runtime: aws_lambda.Runtime.PYTHON_3_13,
+      code: aws_lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, '../../services/lambdas/application-completion-lambda/'), 
+        {
+          platform: aws_ecr_assets.Platform.LINUX_AMD64
+        }
+      ),
       timeout: cdk.Duration.minutes(15),
       memorySize: 2048,
       role: application_role,
       environment: {
         S3_DOCS: s3_docs.bucketName,
-        KB_ID: process.env.KB_ID || '',
-        KB_DATASOURCE_ID: process.env.KB_DATASOURCE_ID || ''
+        S3_FILLED: s3_filled.bucketName,
+        KB_ID: process.env.KB_ID || ''
       }
     })
 
     // Grant S3 access to application form completion lambda
     s3_filled.grantReadWrite(application_form_lambda)
+    s3_docs.grantReadWrite(application_form_lambda)
 
     // MD to DOCX lambda
     const md_docx_lambda = new aws_lambda.DockerImageFunction(this, 'PyPandocLambda', {
-      code: aws_lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../../services/lambdas/pypandoc-lambda')),
+      functionName: 'md-to-docx-lambda',
+      code: aws_lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, '../../services/lambdas/pypandoc-lambda/'),
+        {
+          platform: aws_ecr_assets.Platform.LINUX_AMD64
+        }
+      ),
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
       environment: {
-        S3_DOCS: s3_docs.bucketName
+        S3_FILLED: s3_filled.bucketName
       }
     })
 
@@ -176,10 +203,13 @@ export class InfraStack extends cdk.Stack {
       outputPath: '$.Payload'
     })
 
-    const definition = first_task_metadata.next(second_task_kb).next(third_task_application).next(fourth_task_md)
+    const definition = first_task_metadata
+    .next(second_task_kb)
+    .next(third_task_application)
+    // .next(fourth_task_md)
 
     const stateMachine = new aws_sfn.StateMachine(this, 'StateMachine', {
-      definition,
+      definitionBody: aws_sfn.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.minutes(15),
       stateMachineName: 'form-completion-orchestration'
     })

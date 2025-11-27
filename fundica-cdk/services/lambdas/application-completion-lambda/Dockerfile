@@ -10,8 +10,8 @@ COPY requirements.txt ${LAMBDA_TASK_ROOT}
 RUN pip install -r requirements.txt
 
 # Copy your Python code into the image
-COPY lambda_txt_to_doc.py ${LAMBDA_TASK_ROOT}
+COPY application_completion_lambda.py ${LAMBDA_TASK_ROOT}
 
 # Tell Lambda which function to run
 # Format: filename.function_name
-CMD ["lambda_txt_to_doc.lambda_handler"]
+CMD ["application_completion_lambda.lambda_handler"]

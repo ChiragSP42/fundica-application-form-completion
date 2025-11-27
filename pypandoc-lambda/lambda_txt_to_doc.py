@@ -4,7 +4,7 @@ import os
 from datetime import date
 import pypandoc
 
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", '')
+S3_FILLED = os.getenv("S3_FILLED", '')
 
 def lambda_handler(event, context):
     s3_client = boto3.client("s3")
@@ -18,6 +18,7 @@ def lambda_handler(event, context):
         username = body.get('username')
         application_form = body.get('applicationForm') # Either CanExport Application form OR <TBD>
         filename = body.get('filename')
+        year = body.get("year", date.today().year)
         
         # Validate required fields
         if not username:
@@ -31,11 +32,11 @@ def lambda_handler(event, context):
 
     text_file = ''
     try:
-        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=f'results/{username}/{filename}')
+        response = s3_client.get_object(Bucket=S3_FILLED, Key=f'{username}/{year}/{filename}')
         text_file = response['Body'].read().decode('utf-8')
     except Exception as e:
         print(f"md file not found.")
-        return error_response(400, f'Application prompt not found at {S3_BUCKET_NAME}/results/{username}/{filename}: {str(e)}')
+        return error_response(400, f'Application prompt not found at {S3_FILLED}/{username}/{year}/{filename}: {str(e)}')
 
     temp_docx = '/tmp/output.docx'
     pypandoc.convert_text(
@@ -47,7 +48,7 @@ def lambda_handler(event, context):
         
         # Upload to S3
     s3_client = boto3.client('s3')
-    s3_client.upload_file(temp_docx, S3_BUCKET_NAME, f'results/{username}/{date.today()}_{application_form}_completed.docx')
+    s3_client.upload_file(temp_docx, S3_FILLED, f'{username}/{year}/{username}_{year}_{application_form}_completed.docx')
 
     return success_response({
             'message': 'Application form completed',

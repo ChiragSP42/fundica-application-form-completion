@@ -206,16 +206,10 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
                       document_bytes=document_bytes,
                       application_writing_prompt=application_writing_prompt)
         
-        
-        max_workers = result['split'] if result['split'] <= 3 else 3
-        progress = ProgressTracker(len(enriched_questions))
-        start_time = time.time()
+        enriched_texts = []
         start_index = 0
-        counter = 0
-        filled_parts = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            end_index = start_index + result['parts'] + (1 if counter < result['remainder'] else 0)
-            print(f"Start index: {start_index}, End index: {end_index}")
+        for i in range(result['split']):
+            end_index = start_index + result['parts'] + (1 if i < result['remainder'] else 0)
             enriched_quesitions_subset = enriched_questions[start_index: end_index]
             enriched_data = []
             for enrich in enriched_quesitions_subset:
@@ -226,21 +220,27 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
                 format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
                 enriched_data.append(format)
             enriched_text = "\n\n".join(enriched_data)
+            enriched_texts.append(enriched_text)
             start_index = end_index
-            counter += 1
+        print("Split counting done, now starting concurrent LLM calls")
+        max_workers = result['split'] if result['split'] <= 3 else 3
+        progress = ProgressTracker(result['split'])
+        start_time = time.time()
+        filled_parts = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_completed = [executor.submit(generate_answers, 
                                                 progress, 
                                                 document_bytes, 
                                                 enriched_text, 
-                                                application_writing_prompt)]
+                                                application_writing_prompt) for enriched_text in enriched_texts]
 
             for future in as_completed(future_completed):
                 result = future.result()
                 filled_parts.append(result)
 
-                elapsed_time = time.time() - start_time
-                print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
-                # print(f"Average time per split: {(elapsed_time/result['split']):.2f} seconds/split")
+        elapsed_time = time.time() - start_time
+        print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
+            # print(f"Average time per split: {(elapsed_time/result['split']):.2f} seconds/split")
 
         if filled_parts:
             # Stitch the part answers and pass it through one final LLM to polish everything out
@@ -386,6 +386,7 @@ def split_counter(enriched_questions: List,
         if counting_failed_flag == True:
             split += 1
         else:
+            print(f"{split} splits work. Each split has {parts} with {remainder} remainder")
             return {
                 "split": split,
                 "parts": parts,

@@ -6,7 +6,7 @@ import pypandoc
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
 from botocore.config import Config
 from datetime import date
 import tiktoken
@@ -19,6 +19,7 @@ S3_FILLED = os.getenv("S3_FILLED")
 KB_ID = os.getenv("KB_ID", '')
 NUM_RESULTS_PER_QUERY = 20
 MAX_WORKERS = 15
+INPUT_TOKEN_LIMIT = 200000
 # MODEL_ID = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
 # MODEL_ID = 'us.anthropic.claude-3-7-sonnet-20250219-v1:0'
 MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
@@ -107,9 +108,9 @@ def lambda_handler(event, context):
         start_time = time.time()
         completed_application_form = generate_application_form(document_bytes, enriched_questions, application_writing_prompt)
         elapsed_time = time.time() - start_time
-        print("FORM FILLED!")
-        print(f"Total time elapsed: {elapsed_time:.2f} seconds")
         if completed_application_form:
+            print("FORM FILLED!")
+            print(f"Total time elapsed: {elapsed_time:.2f} seconds")
             try:
                 # Convert markdown to docx using pypandoc
                 print("Converting to docx")
@@ -139,7 +140,7 @@ def lambda_handler(event, context):
         print(f"Error in lambda_handler: {str(e)}")
         return return_response(500, {"error": f'Internal server error: {str(e)}'})
 
-def generate_application_form(document_bytes, enriched_questions, application_writing_prompt)-> str:
+def generate_application_form(document_bytes, enriched_questions, application_writing_prompt)-> Optional[str]:
     """
     Generate the application form based on the form type.
     This function contains templates for different application types.
@@ -159,60 +160,95 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
     enriched_text = "\n\n".join(enriched_data)
     # First check if input tokens will fit in one LLM call
     print("First check if input tokens will fit in one LLM call")
-    print("Converting to docx")
-    with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
-        temp_docx_file.write(document_bytes)
-        temp_docx_file.flush()
-        # Use convert_file to convert the temp DOCX file to plain text
-        document = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
-    
-    encoding = tiktoken.get_encoding('cl100k_base')
-    tokens = len(encoding.encode(document+enriched_text+application_writing_prompt))
+    tokens = count_tokens(document=document_bytes,
+                          enriched_text=enriched_text,
+                          prompt=application_writing_prompt)
     print(f"Total input tokens: {tokens}")
-    try:
-        completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
-                                                messages=[
-                                                    {
-                                                        'role': 'user',
-                                                        'content': [
-                                                            {
-                                                                'document':{
-                                                                    'format': 'docx',
-                                                                    'name': 'CanExport Application Form',
-                                                                    'source': {
-                                                                        'bytes': document_bytes
+    if tokens <= INPUT_TOKEN_LIMIT:
+        try:
+            completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
+                                                    messages=[
+                                                        {
+                                                            'role': 'user',
+                                                            'content': [
+                                                                {
+                                                                    'document':{
+                                                                        'format': 'docx',
+                                                                        'name': 'CanExport Application Form',
+                                                                        'source': {
+                                                                            'bytes': document_bytes
+                                                                        }
                                                                     }
+                                                                },
+                                                                {
+                                                                    'text': enriched_text
                                                                 }
-                                                            },
-                                                            {
-                                                                'text': enriched_text
-                                                            }
-                                                        ]
-                                                    }
-                                                ],
-                                                system=[
-                                                    {
-                                                        'text': application_writing_prompt
-                                                    }
-                                                ],
-                                                inferenceConfig={
-                                                    'maxTokens': 63000
-                                                })
-        print("Went through in a single call!")
-        return completed_application_form['output']['message']['content'][0]['text']
-    except bedrock_runtime_client.exceptions.ValidationException as e:
-        print(f"Input tokens are too big, implementing (N+1) approach: {e}")
+                                                            ]
+                                                        }
+                                                    ],
+                                                    system=[
+                                                        {
+                                                            'text': application_writing_prompt
+                                                        }
+                                                    ],
+                                                    inferenceConfig={
+                                                        'maxTokens': 63000
+                                                    })
+            print("Went through in a single call!")
+            return completed_application_form['output']['message']['content'][0]['text']
+        except Exception as e:
+            print(f"Single LLM call failed: {e}")
+    else:
         # Figure out how many concurrent LLM calls are needed
+        print(f"Input tokens are too big, implementing (N+1) approach")
         start_time = time.time()
-        filled_parts = split_counter(enriched_questions=enriched_questions,
+        result = split_counter(enriched_questions=enriched_questions,
                       document_bytes=document_bytes,
                       application_writing_prompt=application_writing_prompt)
+        
+        
+        max_workers = result['split'] if result['split'] <= 3 else 3
+        progress = ProgressTracker(len(enriched_questions))
+        start_time = time.time()
+        start_index = 0
+        counter = 0
+        filled_parts = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            end_index = start_index + result['parts'] + (1 if counter < result['remainder'] else 0)
+            print(f"Start index: {start_index}, End index: {end_index}")
+            enriched_quesitions_subset = enriched_questions[start_index: end_index]
+            enriched_data = []
+            for enrich in enriched_quesitions_subset:
+                section = enrich['section']
+                question = enrich['question']
+                context = enrich['context']
+
+                format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
+                enriched_data.append(format)
+            enriched_text = "\n\n".join(enriched_data)
+            start_index = end_index
+            counter += 1
+            future_completed = [executor.submit(generate_answers, 
+                                                progress, 
+                                                document_bytes, 
+                                                enriched_text, 
+                                                application_writing_prompt)]
+
+            for future in as_completed(future_completed):
+                result = future.result()
+                filled_parts.append(result)
+
+                elapsed_time = time.time() - start_time
+                print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
+                # print(f"Average time per split: {(elapsed_time/result['split']):.2f} seconds/split")
+
         if filled_parts:
             # Stitch the part answers and pass it through one final LLM to polish everything out
             stitched = "\n".join(filled_parts)
             print("Final LLM call to polish it out")
-            encoding = tiktoken.get_encoding('cl100k_base')
-            tokens = len(encoding.encode(document+stitched+"I have attached the application form template. Refer to it and fill out the application form from the context provided"))
+            tokens = count_tokens(document_bytes, 
+                                  stitched, 
+                                  "I have attached the application form template. Refer to it and fill out the application form from the context provided")
             print(f"Total input tokens after everything: {tokens}")
             start_time = time.time()
             completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
@@ -292,7 +328,7 @@ def generate_answers(progress,
 
 def split_counter(enriched_questions: List, 
                   document_bytes, 
-                  application_writing_prompt: str) -> List[str]:
+                  application_writing_prompt: str) -> Dict[str, int]:
     """
     This function determines how many concurrent LLM calls are needed 
     by counting how many splits it takes to pass through the model.
@@ -310,7 +346,7 @@ def split_counter(enriched_questions: List,
     # Flag to detemine when all splits have passed
     split_failed_flag = True
     remainder = 1
-    filled_parts = []
+    split_tokens = []
     print(f"Total length of enriched questions: {len(enriched_questions)}")
     while split_failed_flag:
         if split >= 3:
@@ -335,102 +371,49 @@ def split_counter(enriched_questions: List,
                 enriched_data.append(format)
             enriched_text = "\n\n".join(enriched_data)
             start_index = end_index
-            try:
-                print("Trying first of many LLM call of split")
-                with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
-                    temp_docx_file.write(document_bytes)
-                    temp_docx_file.flush()
-                    # Use convert_file to convert the temp DOCX file to plain text
-                    document = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
-                encoding = tiktoken.get_encoding('cl100k_base')
-                tokens = len(encoding.encode(document+enriched_text+application_writing_prompt))
-                print(f"Total input tokens for first of many LLM: {tokens}")
-                start_time = time.time()
-                completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
-                                                                    messages=[
-                                                                        {
-                                                                            'role': 'user',
-                                                                            'content': [
-                                                                                {
-                                                                                    'document':{
-                                                                                        'format': 'docx',
-                                                                                        'name': 'CanExport Application Form',
-                                                                                        'source': {
-                                                                                            'bytes': document_bytes
-                                                                                        }
-                                                                                    }
-                                                                                },
-                                                                                {
-                                                                                    'text': enriched_text
-                                                                                }
-                                                                            ]
-                                                                        }
-                                                                    ],
-                                                                    system=[
-                                                                        {
-                                                                            'text': application_writing_prompt
-                                                                        }
-                                                                    ],
-                                                                    inferenceConfig={
-                                                                        'maxTokens': 20000
-                                                                    })
-                elapsed_time = time.time() - start_time
-                print(f"Time elapsed for first LLM call: {elapsed_time:.2f} seconds")
-                print(f"{split} works, proceeding with concurrent LLM calls for rest of it")
-                filled_parts.append(completed_application_form['output']['message']['content'][0]['text'])
-                max_workers = split if split <= 3 else 3
-                counter = i
-                progress = ProgressTracker(len(enriched_questions))
-                start_time = time.time()
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    end_index = start_index + parts + (1 if counter < remainder else 0)
-                    print(f"Start index: {start_index}, End index: {end_index}")
-                    enriched_quesitions_subset = enriched_questions[start_index: end_index]
-                    enriched_data = []
-                    for enrich in enriched_quesitions_subset:
-                        section = enrich['section']
-                        question = enrich['question']
-                        context = enrich['context']
 
-                        format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
-                        enriched_data.append(format)
-                    enriched_text = "\n\n".join(enriched_data)
-                    with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
-                        temp_docx_file.write(document_bytes)
-                        temp_docx_file.flush()
-                        # Use convert_file to convert the temp DOCX file to plain text
-                        document = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
-                    encoding = tiktoken.get_encoding('cl100k_base')
-                    tokens = len(encoding.encode(document+enriched_text+application_writing_prompt))
-                    print(f"Total input tokens for concurrent LLM: {tokens}")
-                    start_index = end_index
-                    counter += 1
-                    future_completed = [executor.submit(generate_answers, 
-                                                        progress, 
-                                                        document_bytes, 
-                                                        enriched_text, 
-                                                        application_writing_prompt)]
-
-                    for future in as_completed(future_completed):
-                        result = future.result()
-                        filled_parts.append(result)
-
-                elapsed_time = time.time() - start_time
-                print(f"Time elapsed for concurrent LLM calls: {elapsed_time:.2f} seconds")
-                print(f"Average time per split: {(elapsed_time/split):.2f} seconds/split")
-                counting_failed_flag = False
-                break
-            except Exception as e:
-                print(f"Split counter failed, incrementing counter: {e}")
+            # Count tokens and check if less than limit
+            tokens = count_tokens(document=document_bytes,
+                                  enriched_text=enriched_text,
+                                  prompt=application_writing_prompt)
+            print(f"Tokens of {i}th part: {tokens}")
+            if tokens > INPUT_TOKEN_LIMIT:
                 counting_failed_flag = True
                 break
-            
+            else:
+                split_tokens.append(tokens)
+        # If split counting failed, increment split
         if counting_failed_flag == True:
             split += 1
         else:
-            split_failed_flag = False
-    return filled_parts
+            return {
+                "split": split,
+                "parts": parts,
+                "remainder": remainder
+            }
+    # Split counter failed
+    return {
+        "split": 0,
+        "parts": 0,
+        "remainder": 0
+    }
 
+def count_tokens(document, enriched_text, prompt):
+    if isinstance(document, bytes):
+        with tempfile.NamedTemporaryFile(suffix=".docx") as temp_docx_file:
+            temp_docx_file.write(document)
+            temp_docx_file.flush()
+            # Use convert_file to convert the temp DOCX file to plain text
+            document_text = pypandoc.convert_file(source_file=temp_docx_file.name, to='plain')
+    else:
+        document_text = document
+
+    # Encoding used by Anthropic
+    encoding = tiktoken.get_encoding('cl100k_base')
+    tokens = len(encoding.encode(document_text+enriched_text+prompt))
+
+    return tokens
+    
 class ProgressTracker:
     def __init__(self, total):
         self.total = total

@@ -9,6 +9,7 @@ import * as aws_iam from 'aws-cdk-lib/aws-iam';
 import * as aws_sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as aws_ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as aws_sfn_tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
+import * as aws_s3_notifications from 'aws-cdk-lib/aws-s3-notifications';
 dotenv.config();
 
 export class InfraStack extends cdk.Stack {
@@ -19,7 +20,7 @@ export class InfraStack extends cdk.Stack {
     // S3 BUCKETS
     //=======================================
 
-    const s3_docs = new aws_s3.Bucket(this, 'DocsBucket', {
+    const s3_docs_bucket = new aws_s3.Bucket(this, 'DocsBucket', {
       bucketName: `fundica-docs-${this.account}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true
@@ -27,9 +28,10 @@ export class InfraStack extends cdk.Stack {
 
     new aws_s3_deployment.BucketDeployment(this, 'DeployPrompts', {
       sources: [
-        aws_s3_deployment.Source.asset(path.join(__dirname, "../../local-files"))
+        aws_s3_deployment.Source.asset(path.join(__dirname, "../../local-files"),
+        {exclude: ['**/.DS_Store']})
       ],
-      destinationBucket: s3_docs
+      destinationBucket: s3_docs_bucket,
     })
 
     const s3_filled_bucket = new aws_s3.Bucket(this, 'FilledApplicationBucket', {
@@ -81,6 +83,25 @@ export class InfraStack extends cdk.Stack {
 
     // Attaching policy to role
     bedrock_policy.attachToRole(application_role)
+
+    // Lambda role for application orchestration triggering
+    const application_trigger_role = new aws_iam.Role(this, 'ApplicationTriggerRole', {
+      assumedBy: new aws_iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        aws_iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    })
+
+    // Lambda role for question generation lambda
+    const question_generation_role = new aws_iam.Role(this, 'QuestionGenerationRole', {
+      assumedBy: new aws_iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        aws_iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    })
+
+    // Attaching bedrock policy to role
+    bedrock_policy.attachToRole(question_generation_role)
 
     // Basic Lambda role for logging
     const basic_lambda_role = new aws_iam.Role(this, 'BasicLambdaRole', {
@@ -142,7 +163,7 @@ export class InfraStack extends cdk.Stack {
       memorySize: 512,
       role: application_role,
       environment: {
-        S3_DOCS: s3_docs.bucketName,
+        S3_DOCS: s3_docs_bucket.bucketName,
         S3_FILLED: s3_filled_bucket.bucketName,
         KB_ID: process.env.KB_ID || ''
       }
@@ -150,7 +171,29 @@ export class InfraStack extends cdk.Stack {
 
     // Grant S3 access to application form completion lambda
     s3_filled_bucket.grantReadWrite(application_form_lambda)
-    s3_docs.grantReadWrite(application_form_lambda)
+    s3_docs_bucket.grantReadWrite(application_form_lambda)
+
+    // Lambda to generate questions.json for a new application form template
+    const questions_generation_lambda = new aws_lambda.Function(this, 'QuestionsGenerationLambda', {
+      functionName: 'questions-generation-lambda',
+      description: 'Lambda that will generate the questions.json when triggered by S3 event',
+      code: aws_lambda.Code.fromAsset(path.join(__dirname, '../../services/lambdas/')),
+      handler: 'question_generation_lambda.lambda_handler',
+      runtime: aws_lambda.Runtime.PYTHON_3_13,
+      timeout: cdk.Duration.minutes(15),
+      role: question_generation_role,
+      environment: {
+        S3_DOCS: s3_docs_bucket.bucketName
+      }
+    })
+
+    s3_docs_bucket.grantReadWrite(questions_generation_lambda)
+    s3_docs_bucket.addEventNotification(aws_s3.EventType.OBJECT_CREATED,
+      new aws_s3_notifications.LambdaDestination(questions_generation_lambda),
+      {
+        prefix: 'application-forms'
+      }
+    )
     //=======================================
     // STEPFUNCTIONS
     //=======================================
@@ -179,5 +222,41 @@ export class InfraStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(15),
       stateMachineName: 'form-completion-orchestration'
     })
+
+    // Stepfunction policy-------------------
+    const sfn_policy = new aws_iam.Policy(this, 'SfnPolicy', {
+      statements: [
+        new aws_iam.PolicyStatement({
+          actions: [
+            "states:StartExecution"
+          ],
+          resources: [
+            stateMachine.stateMachineArn
+          ],
+          effect: aws_iam.Effect.ALLOW
+        })
+      ]
+    })
+
+    sfn_policy.attachToRole(application_trigger_role)
+
+    const application_trigger_lambda = new aws_lambda.Function(this, 'ApplicationTriggerLambda', {
+      functionName: 'application-trigger-lambda',
+      description: 'Lambda that will trigger the application form generation lambda orchestration.',
+      code: aws_lambda.Code.fromAsset(path.join(__dirname, '../../services/lambdas/')),
+      handler: 'application_trigger_lambda.lambda_handler',
+      runtime: aws_lambda.Runtime.PYTHON_3_13,
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 512,
+      role: application_trigger_role,
+      environment: {
+        STATE_MACHINE_ARN: stateMachine.stateMachineArn
+      }
+    })
+
+    s3_users_bucket.addEventNotification(
+      aws_s3.EventType.OBJECT_CREATED,
+      new aws_s3_notifications.LambdaDestination(application_form_lambda)
+    )
   }
 }

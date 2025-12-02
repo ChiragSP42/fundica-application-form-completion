@@ -23,12 +23,20 @@ You MUST follow this exact JSON structure:
     {
       "id": number - Sequential ID starting from 1,
       "section": "string - The section name this question belongs to",
-      "question": "string - The exact question text or field label from the form",
+      "question": "string - The question that will be used as the query to retrieve relevant text chunks from knowledge base",
       "field_type": "string - One of: text, long_text, date, currency, number, list, checkbox, dropdown, email, phone, url, textarea",
       "max_characters": number or null - Maximum character limit if specified or can be inferred, otherwise null
     }
   ]
 }
+
+## Question content
+
+The questions under each section is used as queries to retrieve relevant text chunks from a knowledge base. The knowledge base contains input documents with relevant information that can be used to fill the application form.
+
+So the purpose of the questions is to break down the broad or complex section questions in the template into smaller, more specific questions to better retrieve relevant text chunks from the input documents.
+
+So structure the questions such that they maximise the ability of the knowledge base to give back relevant text chunks.
 
 ## Field Type Definitions
 
@@ -91,37 +99,99 @@ Output ONLY the JSON object. No additional text, no code fences, no explanations
 
 ## Example
 
-If given a simple form with:
-- Section: "Personal Information"
-  - Text field: "Full Name"
-  - Email field: "Email Address"
-  - Date field: "Date of Birth"
-
-You would output:
-
 {
-  "form_name": "Example Application Form",
-  "form_version": "2025-01-01",
+  "form_name": "CanExport SMEs Application Form",
+  "form_version": "2025-05-07",
   "questions": [
     {
       "id": 1,
-      "section": "Personal Information",
-      "question": "Full Name",
+      "section": "Project Information",
+      "question": "What is the name or title of this project?",
       "field_type": "text",
-      "max_characters": 200
+      "max_characters": null
     },
     {
       "id": 2,
-      "section": "Personal Information",
-      "question": "Email Address",
-      "field_type": "email",
+      "section": "Target Markets",
+      "question": "Where does the company currently sell internationally?",
+      "field_type": "text",
       "max_characters": null
     },
     {
       "id": 3,
-      "section": "Personal Information",
-      "question": "Date of Birth",
-      "field_type": "date",
+      "section": "Target Markets",
+      "question": "What are the company's international sales revenues?",
+      "field_type": "currency",
+      "max_characters": null
+    },
+    {
+      "id": 4,
+      "section": "Marketing Strategy",
+      "question": "What trade shows, events, or conferences will the company attend?",
+      "field_type": "long_text",
+      "max_characters": null
+    },
+    {
+      "id": 5,
+      "section": "Project Objectives",
+      "question": "What does the company hope to achieve through this project?",
+      "field_type": "long_text",
+      "max_characters": null
+    },
+    {
+      "id": 6,
+      "section": "Expected Benefits",
+      "question": "How many new contracts or agreements does the company expect to sign?",
+      "field_type": "text",
+      "max_characters": null
+    },
+    {
+      "id": 7,
+      "section": "Expected Benefits",
+      "question": "How many leads does the company expect to generate?",
+      "field_type": "text",
+      "max_characters": null
+    },
+    {
+      "id": 8,
+      "section": "Expected Benefits",
+      "question": "What other benefits or outcomes does the company expect?",
+      "field_type": "long_text",
+      "max_characters": null
+    },
+    {
+      "id": 9,
+      "section": "Project Budget - Travel",
+      "question": "What travel is planned for this project?",
+      "field_type": "long_text",
+      "max_characters": null
+    },
+    {
+      "id": 10,
+      "section": "Project Budget - Trade Shows",
+      "question": "What are the shipping or freight costs for equipment?",
+      "field_type": "currency",
+      "max_characters": null
+    },
+    {
+      "id": 11,
+      "section": "Project Budget - Marketing",
+      "question": "What marketing materials need to be created or adapted?",
+      "field_type": "long_text",
+      "max_characters": null
+    },
+    {
+      "id": 12,
+      "section": "Project Budget - Marketing",
+      "question": "What are the marketing material costs?",
+      "field_type": "currency",
+      "max_characters": null
+    },
+    {
+      "id": 13,
+      "section": "Project Budget - Summary",
+      "question": "Provide a detailed breakdown of all project costs by activity and expense type.",
+      "field_type": "long_text",
       "max_characters": null
     }
   ]
@@ -129,7 +199,7 @@ You would output:
 
 CRITICAL REMINDERS:
 - Output ONLY valid JSON
-- Do NOT include markdown code fences (```
+- Do NOT include markdown code fences like, ```json
 - Do NOT add explanatory text before or after JSON
 - Do NOT use comments inside JSON
 - Ensure all strings are properly escaped

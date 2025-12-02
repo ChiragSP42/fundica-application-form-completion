@@ -63,8 +63,7 @@ def lambda_handler(event: dict, context):
     questions = response['output']['message']['content'][0]['text']
 
     # TODO: Store created questions.json in S3
-    # s3_client.put_object(Bucket=s3_bucket,
-    #                      Key=)
+
 
 def parse_event(event: Dict) -> Tuple[str, str, str]:
     """Function to parse event from S3 trigger.

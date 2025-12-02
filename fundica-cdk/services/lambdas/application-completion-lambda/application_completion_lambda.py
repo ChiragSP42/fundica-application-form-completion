@@ -17,7 +17,7 @@ import tempfile
 S3_DOCS = os.environ.get('S3_DOCS')
 S3_FILLED = os.getenv("S3_FILLED")
 KB_ID = os.getenv("KB_ID", '')
-NUM_RESULTS_PER_QUERY = 20
+# NUM_RESULTS_PER_QUERY = 20
 MAX_WORKERS = 15
 INPUT_TOKEN_LIMIT = 200000
 # MODEL_ID = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
@@ -54,8 +54,9 @@ def lambda_handler(event, context):
             body = event.get('body', {})
         
         username = body.get('username')
-        application_form = body.get('applicationForm') # Either CanExport Application form OR <TBD>
+        application_form = body.get('applicationForm').lower() # Either CanExport Application form OR <TBD>
         year = body.get('year', date.today().year)
+        num_results = body.get('numResults', 5)
         
         # Validate required fields
         if not username or not application_form:
@@ -68,7 +69,7 @@ def lambda_handler(event, context):
     # Read the CanExport Application form in the form of bytes
     print('Read the CanExport Application form template in the form of bytes')
     try:
-        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/templates/{application_form}_template.docx')
+        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/{year}/{application_form}_template.docx')
         document_bytes = response['Body'].read()
     except Exception as e:
         print(f"{application_form} not found. Upload applicaiton form first")
@@ -78,7 +79,7 @@ def lambda_handler(event, context):
     # Load questions
     print("Load questions")
     try:
-        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/questions/{application_form}_questions.json')
+        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/{year}/{application_form}_questions.json')
         questions = json.loads(response['Body'].read())
     except Exception as e:
         print(f"{application_form}_questions.json not found. Check generation of questions.")
@@ -90,13 +91,14 @@ def lambda_handler(event, context):
         questions["questions"], 
         max_workers=MAX_WORKERS,  # Adjust based on your needs,
         user = username,
-        year = year
+        year = year,
+        num_results=num_results
     )
 
     # Load application_writing_prompt.
     print("Load application_writing_prompt.")
     try:
-        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/prompts/{application_form}_application_writing_prompt.txt')
+        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/{year}/{application_form}_application_writing_prompt.txt')
         application_writing_prompt = response['Body'].read().decode('utf-8')
     except Exception as e:
         print(f"{application_form}_application_writing_prompt.txt not found. Check existence of prompt.")
@@ -122,7 +124,7 @@ def lambda_handler(event, context):
                         outputfile=temp_docx
                     )
                 print("Uploading to S3")
-                s3_client.upload_file(temp_docx, S3_FILLED, f'{username}/{year}/{username}_{year}_{application_form}_completed.docx')
+                s3_client.upload_file(temp_docx, S3_FILLED, f'{username}/{year}/{username}_{year}_{num_results}_chunks_{application_form}_completed.docx')
 
             except Exception as s3_error:
                 print(f"Warning: Could not save form to S3: {str(s3_error)}")
@@ -132,7 +134,7 @@ def lambda_handler(event, context):
                 'username': username,
                 'applicationForm': application_form,
                 'generatedAt': f'{date.today()}',
-                'filename': f"{username}_{year}_{application_form}_completed.docx"
+                'filename': f"{username}_{year}_{num_results}_chunks_{application_form}_completed.docx"
             })
         else:
             return return_response(400, {"error": f'N+1 approach failed'})
@@ -165,6 +167,7 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
                           prompt=application_writing_prompt)
     print(f"Total input tokens: {tokens}")
     if tokens <= INPUT_TOKEN_LIMIT:
+        print("Single call needed!")
         try:
             completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
                                                     messages=[
@@ -431,7 +434,11 @@ class ProgressTracker:
         with self.lock:
             self.failed += 1
 
-def retrieve_with_retry(question_text: str, user: str, year: int, max_retries: int = 3) -> Dict:
+def retrieve_with_retry(question_text: str, 
+                        user: str, 
+                        year: int, 
+                        num_results: int, 
+                        max_retries: int = 3) -> Dict:
     """
     Retrieve from Knowledge Base with exponential backoff retry logic.
     
@@ -449,7 +456,7 @@ def retrieve_with_retry(question_text: str, user: str, year: int, max_retries: i
                 retrievalQuery={'text': question_text},
                 retrievalConfiguration={
                     'vectorSearchConfiguration': {
-                        'numberOfResults': NUM_RESULTS_PER_QUERY,
+                        'numberOfResults': num_results,
                         'filter': {
                             'andAll': [
                                 {
@@ -485,7 +492,11 @@ def retrieve_with_retry(question_text: str, user: str, year: int, max_retries: i
     
     raise Exception(f"Max retries ({max_retries}) exceeded for question: {question_text}")
 
-def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker, user: str, year: int) -> Dict:
+def retrieve_context_for_question(question_item: Dict, 
+                                  progress: ProgressTracker, 
+                                  user: str, 
+                                  year: int, 
+                                  num_results: int) -> Dict:
     """
     Retrieve context for a single question with error handling.
     
@@ -501,7 +512,7 @@ def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker
     
     try:
         # Retrieve from Knowledge Base
-        response = retrieve_with_retry(question_text, user, year)
+        response = retrieve_with_retry(question_text, user, year, num_results)
         
         # Extract context chunks
         context_chunks = []
@@ -549,7 +560,11 @@ def retrieve_context_for_question(question_item: Dict, progress: ProgressTracker
             'status': 'failed'
         }
 
-def retrieve_all_contexts_concurrent(questions: List[Dict], user: str, year: int, max_workers: int = 15) -> List[Dict]:
+def retrieve_all_contexts_concurrent(questions: List[Dict],
+                                     user: str, 
+                                     year: int, 
+                                     num_results: int = 5, 
+                                     max_workers: int = 15) -> List[Dict]:
     """
     Retrieve contexts for all questions using concurrent threads.
     
@@ -574,7 +589,7 @@ def retrieve_all_contexts_concurrent(questions: List[Dict], user: str, year: int
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks
         future_to_question = {
-            executor.submit(retrieve_context_for_question, q, progress, user, year): q 
+            executor.submit(retrieve_context_for_question, q, progress, user, year, num_results): q 
             for q in questions
         }
         

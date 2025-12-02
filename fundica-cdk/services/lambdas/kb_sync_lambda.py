@@ -19,8 +19,9 @@ def lambda_handler(event, context):
             body = event.get('body', {})
         
         username = body.get('username')
-        application_form = body.get('applicationForm') # Either CanExport Application form OR <TBD>
+        application_form = body.get('applicationForm').lower() # Either CanExport Application form OR <TBD>
         year = body.get('year', date.today().year)
+        num_results = body.get('numResults', 5)
         
         # Validate required fields
         if not username or not application_form or not year:
@@ -51,14 +52,16 @@ def lambda_handler(event, context):
             'message': 'Knowledge base ingestion job completed successfully',
             'username': username,
             'applicationForm': application_form,
-            'year': year
+            'year': year,
+            'numResults': num_results
         })
         elif job_status == 'FAILED':
             return error_response(message = {
             'message': 'Knowledge base sync failed',
             'username': username,
             'applicationForm': application_form,
-            'year': year
+            'year': year,
+            'numResults': num_results
         },
         status_code = 500)
     else:
@@ -66,7 +69,8 @@ def lambda_handler(event, context):
             'message': 'Knowledge base does not exist',
             'username': username,
             'applicationForm': application_form,
-            'year': year
+            'year': year,
+            'numResults': num_results
         },
         status_code = 400)
 

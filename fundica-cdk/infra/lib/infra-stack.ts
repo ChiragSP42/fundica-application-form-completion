@@ -191,7 +191,16 @@ export class InfraStack extends cdk.Stack {
     s3_docs_bucket.addEventNotification(aws_s3.EventType.OBJECT_CREATED,
       new aws_s3_notifications.LambdaDestination(questions_generation_lambda),
       {
-        prefix: 'application-forms'
+        prefix: 'application-forms',
+        suffix: '.docx'
+      }
+    )
+
+    s3_docs_bucket.addEventNotification(aws_s3.EventType.OBJECT_CREATED,
+      new aws_s3_notifications.LambdaDestination(questions_generation_lambda),
+      {
+        prefix: 'application-forms',
+        suffix: '.pdf'
       }
     )
     //=======================================
@@ -253,10 +262,5 @@ export class InfraStack extends cdk.Stack {
         STATE_MACHINE_ARN: stateMachine.stateMachineArn
       }
     })
-
-    s3_users_bucket.addEventNotification(
-      aws_s3.EventType.OBJECT_CREATED,
-      new aws_s3_notifications.LambdaDestination(application_form_lambda)
-    )
   }
 }

@@ -55,8 +55,11 @@ def lambda_handler(event, context):
         
         username = body.get('username')
         application_form = body.get('applicationForm').lower() # Either CanExport Application form OR <TBD>
+        application_form_year = body.get("applicationFormYear", date.today().year)
         year = body.get('year', date.today().year)
         num_results = body.get('numResults', 5)
+
+        print(f"Username: {username}\nApplication Form: {application_form}\nApplication Form year: {application_form_year}\nYear: {year}\nNum results: {num_results}")
         
         # Validate required fields
         if not username or not application_form:
@@ -67,9 +70,9 @@ def lambda_handler(event, context):
         return return_response(500, {"error": f'Internal server error: {str(e)}'})
 
     # Read the CanExport Application form in the form of bytes
-    print('Read the CanExport Application form template in the form of bytes')
+    print(f'Read the CanExport Application form template in the form of bytes from: application-forms/{application_form}/{application_form_year}/{application_form}_template.docx')
     try:
-        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/{year}/{application_form}_template.docx')
+        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'application-forms/{application_form}/{application_form_year}/{application_form}_template.docx')
         document_bytes = response['Body'].read()
     except Exception as e:
         print(f"{application_form} not found. Upload applicaiton form first")
@@ -77,9 +80,9 @@ def lambda_handler(event, context):
 
 
     # Load questions
-    print("Load questions")
+    print(f"Load questions from: application-forms/{application_form}/{application_form_year}/{application_form}_questions.json")
     try:
-        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/{year}/{application_form}_questions.json')
+        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'application-forms/{application_form}/{application_form_year}/{application_form}_questions.json')
         questions = json.loads(response['Body'].read())
     except Exception as e:
         print(f"{application_form}_questions.json not found. Check generation of questions.")
@@ -96,9 +99,9 @@ def lambda_handler(event, context):
     )
 
     # Load application_writing_prompt.
-    print("Load application_writing_prompt.")
+    print(f"Load application_writing_prompt from: application-forms/{application_form}/{application_form_year}/{application_form}_application_writing_prompt.txt")
     try:
-        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'{application_form}/{year}/{application_form}_application_writing_prompt.txt')
+        response = s3_client.get_object(Bucket=S3_DOCS, Key=f'application-forms/{application_form}/{application_form_year}/{application_form}_application_writing_prompt.txt')
         application_writing_prompt = response['Body'].read().decode('utf-8')
     except Exception as e:
         print(f"{application_form}_application_writing_prompt.txt not found. Check existence of prompt.")

@@ -20,6 +20,7 @@ def lambda_handler(event, context):
         
         username = body.get('username')
         application_form = body.get('applicationForm').lower() # Either CanExport Application form OR <TBD>
+        application_form_year = body.get("applicationFormYear", date.today().year)
         year = body.get('year', date.today().year)
         num_results = body.get('numResults', 5)
         
@@ -52,6 +53,7 @@ def lambda_handler(event, context):
             'message': 'Knowledge base ingestion job completed successfully',
             'username': username,
             'applicationForm': application_form,
+            'applicationFormYear': application_form_year,
             'year': year,
             'numResults': num_results
         })
@@ -60,6 +62,7 @@ def lambda_handler(event, context):
             'message': 'Knowledge base sync failed',
             'username': username,
             'applicationForm': application_form,
+            'applicationFormYear': application_form_year,
             'year': year,
             'numResults': num_results
         },
@@ -69,6 +72,7 @@ def lambda_handler(event, context):
             'message': 'Knowledge base does not exist',
             'username': username,
             'applicationForm': application_form,
+            'applicationFormYear': application_form_year,
             'year': year,
             'numResults': num_results
         },

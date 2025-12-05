@@ -80,6 +80,14 @@ def lambda_handler(event: dict, context):
                          Body=json.dumps(questions_json))
     print(f"Stored questions.json at {application_form_name}/{year}/{application_form_name}_questions.json")
 
+    print("Storing prompt in folder")
+    response = s3_client.get_object(Bucket=S3_DOCS,
+                                    Key=f'master/application_writing_prompt.txt')
+    text = response["Body"].read().decode('utf-8')
+    s3_client.put_object(Bucket=S3_DOCS,
+                         Key=f'application-forms/{application_form_name}/{year}/{application_form_name}_application_writing_prompt.txt',
+                         Body=text)
+
 def extract_json_from_llm_response(text: str) -> Optional[Dict[Any, Any]]:
     """
     Extract JSON from LLM response that may contain markdown code fences

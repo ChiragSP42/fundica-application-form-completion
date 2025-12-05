@@ -30,6 +30,7 @@ def lambda_handler(event, context):
         username = body.get('username')
         application_form = body.get('applicationForm').lower() # Either CanExport Application form OR <TBD>
         year = body.get('year', date.today().year)
+        application_form_year = body.get("applicationFormYear", date.today().year)
         num_results = body.get("numResults", 5)
         
         # Validate required fields
@@ -57,6 +58,7 @@ def lambda_handler(event, context):
             'username': username,
             'applicationForm': application_form,
             'year': year,
+            'applicationFormYear': application_form_year,
             'numResults': num_results,
             'nextStep': 'Knowledge base sync will be triggered'
         })

@@ -25,7 +25,7 @@ You MUST follow this exact JSON structure:
       "section": "string - The section name this question belongs to",
       "question": "string - The question that will be used as the query to retrieve relevant text chunks from knowledge base",
       "field_type": "string - One of: text, long_text, date, currency, number, list, checkbox, dropdown, email, phone, url, textarea",
-      "max_characters": number or null - Maximum character limit if specified or can be inferred, otherwise null
+      "max_characters": number or null - Maximum character limit if specified, or instructions like "1-2 sentences", "Max 200 words", or left to the LLM to decide if nothing can be inferred
     }
   ]
 }
@@ -76,12 +76,11 @@ So structure the questions such that they maximise the ability of the knowledge 
    - If form says "Website" or "URL" → "url"
 
 3. **Estimate max_characters**:
-   - If form shows character limit (e.g., "Max 500 chars") → Use that number
+   - If form shows character limit (e.g., "Max 500 chars", "Max 500 words") → Use that number
    - If form shows visual space and looks like it fits ~500 words → 4000-5000
    - If form shows small single-line box → 100-200
    - If form shows medium text area → 1000-3000
    - If no limit is apparent or can't estimate → null
-   - For "long_text" questions typically used for descriptions → 3000-4000
    - For budgets or short answers → null
 
 4. **Preserve the exact question text** as it appears in the form (spelling, capitalization, punctuation)

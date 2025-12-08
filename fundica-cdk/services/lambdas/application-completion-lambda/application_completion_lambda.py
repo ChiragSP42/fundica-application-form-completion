@@ -6,11 +6,11 @@ import pypandoc
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from botocore.config import Config
 from datetime import date
 import tiktoken
-from io import BytesIO
+from datetime import datetime
 import tempfile
 
 # Get environment variables
@@ -97,7 +97,6 @@ def lambda_handler(event, context):
         year = year,
         num_results=num_results
     )
-
     # Load application_writing_prompt.
     print(f"Load application_writing_prompt from: application-forms/{application_form}/{application_form_year}/{application_form}_application_writing_prompt.txt")
     try:
@@ -154,15 +153,7 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
     """
     # Stitch retrieved contents, the questions and the section
     print("Stitch retrieved contents, the questions and the section")
-    enriched_data = []
-    for enrich in enriched_questions:
-        section = enrich['section']
-        question = enrich['question']
-        context = enrich['context']
-
-        format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
-        enriched_data.append(format)
-    enriched_text = "\n\n".join(enriched_data)
+    enriched_text = stitch_as_text(questions=enriched_questions)
     # First check if input tokens will fit in one LLM call
     print("First check if input tokens will fit in one LLM call")
     tokens = count_tokens(document=document_bytes,
@@ -171,6 +162,9 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
     print(f"Total input tokens: {tokens}")
     if tokens <= INPUT_TOKEN_LIMIT:
         print("Single call needed!")
+        s3_client.put_object(Bucket=S3_FILLED,
+                        Key=f'enriched_text.txt',
+                        Body=enriched_text)
         try:
             completed_application_form = bedrock_runtime_client.converse(modelId=MODEL_ID,
                                                     messages=[
@@ -216,16 +210,8 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
         start_index = 0
         for i in range(result['split']):
             end_index = start_index + result['parts'] + (1 if i < result['remainder'] else 0)
-            enriched_quesitions_subset = enriched_questions[start_index: end_index]
-            enriched_data = []
-            for enrich in enriched_quesitions_subset:
-                section = enrich['section']
-                question = enrich['question']
-                context = enrich['context']
-
-                format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
-                enriched_data.append(format)
-            enriched_text = "\n\n".join(enriched_data)
+            enriched_questions_subset = enriched_questions[start_index: end_index]
+            enriched_text = stitch_as_text(questions=enriched_questions_subset)
             enriched_texts.append(enriched_text)
             start_index = end_index
         print("Split counting done, now starting concurrent LLM calls")
@@ -279,7 +265,7 @@ def generate_application_form(document_bytes, enriched_questions, application_wr
                                                                         ],
                                                                         system=[
                                                                             {
-                                                                                'text': "I have attached the application form template. Refer to it and fill out the application form from the context provided"
+                                                                                'text': application_writing_prompt
                                                                             }
                                                                         ],
                                                                         inferenceConfig={
@@ -355,7 +341,7 @@ def split_counter(enriched_questions: List,
     split_tokens = []
     print(f"Total length of enriched questions: {len(enriched_questions)}")
     while split_failed_flag:
-        if split >= 3:
+        if split >= 4:
             break
         print(f"Split: {split}")
         parts, remainder = divmod(len(enriched_questions), split)
@@ -366,16 +352,8 @@ def split_counter(enriched_questions: List,
         for i in range(split):
             end_index = start_index + parts + (1 if i<remainder else 0)
             print(f"Start index: {start_index}, End index: {end_index}")
-            enriched_quesitions_subset = enriched_questions[start_index: end_index]
-            enriched_data = []
-            for enrich in enriched_quesitions_subset:
-                section = enrich['section']
-                question = enrich['question']
-                context = enrich['context']
-
-                format = f"Section: {section}\nQuestion: {question}\nContext: {context}"
-                enriched_data.append(format)
-            enriched_text = "\n\n".join(enriched_data)
+            enriched_questions_subset = enriched_questions[start_index: end_index]
+            enriched_text = stitch_as_text(questions=enriched_questions_subset)
             start_index = end_index
 
             # Count tokens and check if less than limit
@@ -420,6 +398,120 @@ def count_tokens(document, enriched_text, prompt):
     tokens = len(encoding.encode(document_text+enriched_text+prompt))
 
     return tokens
+
+def stitch_as_text(questions: List[Dict[str, Any]]) -> str:
+    """
+    Creates a readable text format suitable for LLM input to application_writing_prompt.txt
+    
+    Output Format:
+    ==============================================================================
+    FORM: [Form Name]
+    TYPE: [Form Type - sr-ed, canexport, etc.]
+    VERSION: [Form Version]
+    GENERATED: [Timestamp]
+    ==============================================================================
+    
+    [SECTION: Section Name]
+    ==============================================================================
+    
+      Subsection: [Subsection if applicable]
+    
+    QUESTION #[ID]: [Question Text]
+    --------------------------------------------------------------------------------
+      Type:         [primary/sub-question/clarifying]
+      Field:        [textarea/long_text/text/etc.]
+      Limit:        [TYPE] = [VALUE] ([Exact phrase from form])
+      Instructions: [Special formatting requirements if present]
+      Required:     [True/False]
+    
+      RETRIEVED CONTEXT:
+      ------ [continues for each context chunk] ------
+        [1] [First context chunk]
+        
+        [2] [Second context chunk]
+    
+    [Next Question...]
+    
+    ==============================================================================
+    END OF STITCHED CONTENT
+    ==============================================================================
+    
+    This format is optimized for LLM processing and includes all constraint information.
+    """
+    
+    output_lines = []
+    
+    # Process questions grouped by section
+    current_section = None
+    
+    for question in questions:
+        q_id = question.get('id')
+        section = question.get('section')
+        subsection = question.get('subsection')
+        
+        # Print section header if changed
+        if section != current_section:
+            output_lines.append("")
+            # output_lines.append("=" * 80)
+            output_lines.append(f"[SECTION: {section}]")
+            output_lines.append("")
+            # output_lines.append("=" * 80)
+            current_section = section
+        
+        # Print subsection if present
+        if subsection:
+            output_lines.append("")
+            output_lines.append(f"  Subsection: {subsection}")
+        
+        # Print question details
+        output_lines.append("")
+        output_lines.append(f"QUESTION #{q_id}: {question.get('question')}")
+        output_lines.append("")
+        # output_lines.append("-" * 80)
+        
+        # Question metadata
+        # output_lines.append(f"  Type:        {question.get('question_type')}")
+        output_lines.append(f"  Field:       {question.get('field_type')}")
+        
+        # Limit information - structured for LLM clarity
+        limit_type = question.get('limit_type', '')
+        limit_value = question.get('limit_value')
+        limit_phrase = question.get('limit_phrase')
+        
+        if limit_type != 'none' and limit_value is not None:
+            output_lines.append(f"  Limit:       {limit_type.upper()} = {limit_value} ({limit_phrase})")
+        else:
+            output_lines.append(f"  Limit:       {limit_phrase}")
+        
+        # Instructions for special requirements
+        instructions = question.get('instructions')
+        if instructions:
+            output_lines.append(f"  Instructions: {instructions}")
+        
+        output_lines.append(f"  Required:    {question.get('required', True)}")
+        
+        # Retrieved context from knowledge base
+        context_text = question.get("context", [])
+        
+        if context_text:
+            output_lines.append("")
+            output_lines.append("  RETRIEVED CONTEXT:")
+            output_lines.append("")
+            output_lines.append(context_text)
+            
+            output_lines.append("")
+        else:
+            output_lines.append("")
+            output_lines.append("  RETRIEVED CONTEXT: [No context retrieved for this question]")
+            output_lines.append("")
+    
+    # Footer
+    output_lines.append("")
+    # output_lines.append("=" * 80)
+    # output_lines.append("END OF STITCHED CONTENT")
+    # output_lines.append("=" * 80)
+    
+    return "\n".join(output_lines)
     
 class ProgressTracker:
     def __init__(self, total):
@@ -538,16 +630,9 @@ def retrieve_context_for_question(question_item: Dict,
         combined_context = '\n\n---\n\n'.join(context_chunks)
         
         progress.increment_completed()
+        question_item['context'] = combined_context
         
-        return {
-            'id': question_id,
-            'section': question_item['section'],
-            'question': question_text,
-            'context': combined_context,
-            'sources': sources,
-            'num_chunks': len(context_chunks),
-            'status': 'success'
-        }
+        return question_item
         
     except Exception as e:
         error_msg = str(e)

@@ -6,10 +6,15 @@ The content is of the following form:
 
 Section: Name of the section that this information belongs to.
 Question: The information that needs to be answered. It is there so that you have context as to what information you are supposed to infer from the context.
-Context: The relevant chunks of text from a set of input documents a user provided that was ingested into a knowledge base.
+Field: One of: text, long_text, date, currency, number, list, checkbox, dropdown, email, phone, url, textarea
+Limit: Either a specific phrase like "Max 450 words" or "1-2 sentences" or something like "WORDS = 350 (Maximum 350 words)"
+Instructions: Any special instructions or formatting requirements from the form (e.g., 'In chronological order', 'Highlight technical failures')
+Retrieved Context: The relevant chunks of text from a set of input documents a user provided that was ingested into a knowledge base.
 
 Here are some things to remember as you write up the application form:
 1. Refer to the questions asked in the application form template along with the specific questions to fill in the content for each section.
 2. Write it in a professional tone. Be verbose but direct.
 3. If any information isn't present or not found, just ignore it. Work with what you have and know.
 4. Do not include any fluff in the beginning. All I want is the completed application form.
+5. IMPORTANT: Strictly adhere to all character, word, and sentence limits specified in the context for each question. If a limit is mentioned (e.g., "Max 350 words", "1-2 sentences", "4000 characters"), your response MUST NOT exceed that limit.
+6. IMPORTANT: If special instructions are mentioned in the context for a question (e.g., "in chronological order", "highlight technical failures"), follow those instructions exactly when writing the response.

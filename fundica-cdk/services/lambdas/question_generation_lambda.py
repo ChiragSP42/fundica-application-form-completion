@@ -1,8 +1,7 @@
 import boto3
 import json
 import os
-import re
-from json import JSONDecoder
+from botocore.config import Config
 from typing import (
     Tuple,
     Dict,
@@ -16,8 +15,16 @@ S3_DOCS = os.getenv("S3_DOCS")
 MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
 
 # Initialize BOTO3 clients
+config = Config(
+    read_timeout=300,
+    connect_timeout=60,
+    retries={
+        'total_max_attempts': 5,
+        'mode': 'adaptive'
+    }
+)
 s3_client = boto3.client("s3")
-bedrock_runtime_client = boto3.client("bedrock-runtime")
+bedrock_runtime_client = boto3.client("bedrock-runtime", config=config)
 
 def lambda_handler(event: dict, context):
     print(event)

@@ -21,7 +21,7 @@ export class InfraStack extends cdk.Stack {
     //=======================================
 
     const s3_docs_bucket = new aws_s3.Bucket(this, 'DocsBucket', {
-      bucketName: `fundica-docs-${this.account}`,
+      bucketName: `fundica-docs-${this.account}-canada`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true
     })
@@ -35,13 +35,13 @@ export class InfraStack extends cdk.Stack {
     })
 
     const s3_filled_bucket = new aws_s3.Bucket(this, 'FilledApplicationBucket', {
-      bucketName: `fundica-filled-${this.account}`,
+      bucketName: `fundica-filled-${this.account}-canada`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true
     })
 
     const s3_users_bucket = new aws_s3.Bucket(this, 'UserBucket', {
-      bucketName: `fundica-users-${this.account}`,
+      bucketName: `fundica-users-${this.account}-canada`,
       removalPolicy: cdk.RemovalPolicy.RETAIN
     })
 

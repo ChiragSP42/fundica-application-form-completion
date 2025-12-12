@@ -28,7 +28,7 @@
 
 ## Overview
 
-The Application Form Automation System is an enterprise-grade solution that automates the process of filling out complex application forms by intelligently extracting information from uploaded documents and combining it with templates using AI-powered language models.
+The Application Form Automation System is a POC solution that automates the process of filling out complex application forms by intelligently extracting information from uploaded documents and combining it with templates using AI-powered language models.
 
 The system orchestrates multiple AWS Lambda functions, Knowledge Bases (powered by Bedrock), and LLMs to extract, process, contextualize, and synthesize information to generate completed application forms with minimal manual intervention.
 
@@ -323,7 +323,7 @@ Completed Form Output
 
 ## Installation & Setup
 
-### 1. Clone the Repository
+### 1. Clone the Repository (Optional if present)
 
 ```bash
 git clone https://github.com/your-org/application-form-automation.git
@@ -349,11 +349,7 @@ pip install -r requirements.txt
 aws configure
 ```
 
-Ensure your credentials have permissions for:
-- `s3:GetObject`, `s3:PutObject`
-- `lambda:InvokeFunction`
-- `bedrock:GetKnowledgeBase`
-- `bedrock:Retrieve`
+Enter the access key and secret key along with the region.
 
 ### 5. Deploy Infrastructure
 
@@ -382,33 +378,6 @@ KB_DATASOURCE_ID = kb_datasource_id_here
 KB_ID = kb_id_here
 ```
 
-### 7. Create Master System Prompt
-
-Create a file `fundica-cdk/local-files/master/application_writing_prompt.txt`:
-
-```
-You are a professional AI Application Form Completion assistant. 
-
-I have provided the Application form template. I have also provided content needed to fill this application form. Your job is to write the application form for this user based on the information provided to you in the format of the application form template also provided.
-
-The content is of the following form:
-
-Section: Name of the section that this information belongs to.
-Question: The information that needs to be answered. It is there so that you have context as to what information you are supposed to infer from the context.
-Field: One of: text, long_text, date, currency, number, list, checkbox, dropdown, email, phone, url, textarea
-Limit: Either a specific phrase like "Max 450 words" or "1-2 sentences" or something like "WORDS = 350 (Maximum 350 words)"
-Instructions: Any special instructions or formatting requirements from the form (e.g., 'In chronological order', 'Highlight technical failures')
-Retrieved Context: The relevant chunks of text from a set of input documents a user provided that was ingested into a knowledge base.
-
-Here are some things to remember as you write up the application form:
-1. Refer to the questions asked in the application form template along with the specific questions to fill in the content for each section.
-2. Write it in a professional tone. Be verbose but direct.
-3. If any information isn't present or not found, just ignore it. Work with what you have and know.
-4. Do not include any fluff in the beginning. All I want is the completed application form.
-5. IMPORTANT: Strictly adhere to all character, word, and sentence limits specified in the context for each question. If a limit is mentioned (e.g., "Max 350 words", "1-2 sentences", "4000 characters"), your response MUST NOT exceed that limit.
-6. IMPORTANT: If special instructions are mentioned in the context for a question (e.g., "in chronological order", "highlight technical failures"), follow those instructions exactly when writing the response.
-```
-
 ---
 
 ## Usage
@@ -416,7 +385,7 @@ Here are some things to remember as you write up the application form:
 ### Workflow 1: Upload Application Form Template
 
 1. Prepare your application form as a DOCX file
-2. Upload to the template bucket:
+2. Upload to the template bucket via AWS CLI:
 
 ```bash
 aws s3 cp {application form name}_template.docx s3://fundica-docs-{ACCOUNT ID}/application-forms/{application form name}/{year}/{application form name}_template.docx
@@ -604,10 +573,7 @@ aws s3 cp s3://fundica-filled-{ACCOUNT ID}/{username}/{year}/ ./ --recursive
 
 ### Token Counting Strategy
 
-The system uses dual token counting:
-
-1. **For Claude models**: Uses `anthropic-token-counter` library
-2. **For OpenAI models**: Uses `tiktoken` library
+Uses `tiktoken` library
 
 ### Efficient Token Usage
 

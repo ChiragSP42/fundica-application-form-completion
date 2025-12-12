@@ -6,10 +6,11 @@ __pycache__/
 *.jsonl
 *.pyc
 *.json
-Data/
 *.csv
 *.xlsx
 *.pptx
 *.png
 *.docx
 *.pdf
+
+!stepfunction_test_input.json
